@@ -40,7 +40,7 @@ PROTOCOL_VERSION = "IMPOSTOR/1.0"
 PROMPTS = {
     "ask": "Digite sua PERGUNTA",
     "answer": "Digite sua RESPOSTA",
-    "continue": "[v] votar no impostor  |  [c] jogar mais uma rodada",
+    "continue": "[v] VOTAÇÃO (votar no impostor)  |  [c] CONTINUAR (outro turno)",
     "vote": "Em quem você vota? (número ou nome)",
     "guess": "Qual é a PALAVRA SECRETA?",
 }
@@ -57,7 +57,7 @@ Nos demais momentos, apenas responda quando o jogo pedir (seta  ->).
 
 class ImpostorClient:
     # Eventos que NÃO cancelam a ação pendente do usuário (são só informativos)
-    PASSIVE = {"info", "error", "pong", "lobby_update", "vote_progress"}
+    PASSIVE = {"info", "error", "pong", "lobby_update", "vote_progress", "continue_vote_cast"}
 
     def __init__(self, host, port, name):
         self.host, self.port, self.name = host, port, name
@@ -180,8 +180,9 @@ class ImpostorClient:
         self.out("\n" + "=" * 60)
         self.out(" A PARTIDA COMEÇOU!   Jogadores: %s" % ", ".join(d["players"]))
         self.out(" TEMA: %s" % d["theme"])
-        self.out(" Votação será oferecida após %d rodada(s) (máx. %d)."
-                 % (d["rounds_before_vote"], d["max_rounds"]))
+        self.out(" TURNO = cada jogador faz uma pergunta para todos os outros.")
+        self.out(" Ao fim de CADA turno, todos votam: CONTINUAR (outro turno) ou VOTAÇÃO (do impostor).")
+        self.out(" (limite de %d turnos; depois disso a votação do impostor é obrigatória)" % d["max_turns"])
         self.out("=" * 60)
 
     def on_role_assign(self, d):
@@ -195,23 +196,25 @@ class ImpostorClient:
             self.out("    Tema: %s   |   Palavra secreta: %s" % (d["theme"], d["word"]))
             self.out("    Descubra quem não conhece a palavra (sem entregá-la de bandeja!).")
 
-    def on_round_start(self, d):
-        self.out("\n----- RODADA %d  (ordem: %s) -----" % (d["round"], " > ".join(d["order"])))
+    def on_turn_start(self, d):
+        self.out("\n" + "=" * 60)
+        self.out(" TURNO %d  -  todos perguntam uma vez. Ordem das perguntas: %s"
+                 % (d["turn"], " > ".join(d["order"])))
+        self.out("=" * 60)
 
-    def on_turn_ask(self, d):
+    def on_ask_prompt(self, d):
+        self.out("\n----- Pergunta %d/%d (turno %d) -----" % (d["step"], d["steps"], d["turn"]))
         if d["asker"] == self.name:
-            self.out("\n*** SUA VEZ! Faça UMA pergunta sobre a palavra para TODOS os outros. (turno %d/%d)"
-                     % (d["turn"], d["turns"]))
+            self.out("*** SUA VEZ! Faça UMA pergunta sobre a palavra para TODOS os outros.")
             self.out("    Quem vai responder, em ordem: %s" % ", ".join(d["responders"]))
             self.set_pending("ask")
         else:
-            self.out("\n[turno %d/%d] Vez de %s fazer uma pergunta para todos..."
-                     % (d["turn"], d["turns"], d["asker"]))
+            self.out("Vez de %s fazer uma pergunta para todos..." % d["asker"])
 
     def on_broadcast_question(self, d):
         self.out("  [PERGUNTA] %s (para todos): %s" % (d["asker"], d["text"]))
 
-    def on_turn_answer(self, d):
+    def on_answer_prompt(self, d):
         if d["responder"] == self.name:
             self.out("\n*** Sua vez de RESPONDER (%d/%d) à pergunta de %s: \"%s\""
                      % (d["position"], d["total"], d["asker"], d["question"]))
@@ -222,24 +225,52 @@ class ImpostorClient:
     def on_broadcast_answer(self, d):
         self.out("  [RESPOSTA] %s: %s" % (d["responder"], d["text"]))
 
-    def on_turn_timeout(self, d):
-        motivo = "desconectou" if d["reason"] == "disconnected" else "não respondeu a tempo"
-        self.out("  [!] %s %s (%s). Turno ignorado." % (d["player"], motivo, d["action"]))
+    def on_action_timeout(self, d):
+        motivo = "desconectou" if d["reason"] == "disconnected" else "não agiu a tempo"
+        self.out("  [!] %s %s (%s). Passo ignorado." % (d["player"], motivo, d["action"]))
 
-    def on_round_end(self, d):
-        self.out("----- fim da rodada %d -----" % d["round"])
+    def on_turn_end(self, d):
+        self.out("\n===== Fim do turno %d: todos já fizeram sua pergunta =====" % d["turn"])
 
     def on_ask_continue(self, d):
         self.out("\n" + "#" * 60)
         self.out(" %s" % d["message"])
-        self.out(" (maioria absoluta precisa escolher votar; empate = mais uma rodada)")
+        self.out(" (maioria absoluta precisa escolher VOTAÇÃO; empate ou omissão = CONTINUAR)")
+        self.out(" Os votos aparecem na tela em tempo real.")
         self.out("#" * 60)
         self.set_pending("continue")
 
+    @staticmethod
+    def _placar(d):
+        """Linha(s) com quem votou em cada opção (tempo real)."""
+        def nomes(lst):
+            return ", ".join(lst) if lst else "-"
+        return ("      VOTAÇÃO   (%d): %s\n"
+                "      CONTINUAR (%d): %s\n"
+                "      aguardando    : %s"
+                % (len(d["voters_vote"]), nomes(d["voters_vote"]),
+                   len(d["voters_continue"]), nomes(d["voters_continue"]),
+                   nomes(d["waiting"])))
+
+    def on_continue_vote_cast(self, d):
+        escolha = "VOTAÇÃO" if d["choice"] == "vote" else "CONTINUAR"
+        self.out("\n  >> %s votou em %s  (%d/%d votos)" % (d["voter"], escolha, d["received"], d["total"]))
+        self.out(self._placar(d))
+        # Quem ainda não votou continua com o prompt aberto: reexibe-o.
+        with self.state_lock:
+            ainda_pendente = self.pending == "continue"
+        if ainda_pendente:
+            self.prompt(PROMPTS["continue"])
+
     def on_continue_result(self, d):
-        self.out("\nResultado: votar=%d | continuar=%d | abstenções=%d  =>  %s"
-                 % (d["votes_vote"], d["votes_continue"], d["abstentions"],
-                    "VAMOS VOTAR!" if d["decision"] == "vote" else "mais uma rodada"))
+        nomes = lambda l: ", ".join(l) if l else "-"
+        self.out("\n--- Resultado final da decisão ---")
+        self.out("  VOTAÇÃO   (%d): %s" % (d["votes_vote"], nomes(d["voters_vote"])))
+        self.out("  CONTINUAR (%d): %s" % (d["votes_continue"], nomes(d["voters_continue"])))
+        if d["abstained"]:
+            self.out("  Não votaram   : %s" % nomes(d["abstained"]))
+        self.out("  =>  %s" % ("VAMOS PARA A VOTAÇÃO DO IMPOSTOR!" if d["decision"] == "vote"
+                              else "CONTINUAR: começa outro turno."))
 
     def on_start_vote(self, d):
         self.candidates = [c for c in d["candidates"] if c != self.name]
@@ -344,7 +375,7 @@ class ImpostorClient:
         elif pending == "guess":
             self._consume(); self.send("send_guess", word=line)
         elif pending == "continue":
-            choice = {"v": "vote", "votar": "vote", "vote": "vote",
+            choice = {"v": "vote", "votar": "vote", "votacao": "vote", "votação": "vote", "vote": "vote",
                       "c": "continue", "continuar": "continue", "continue": "continue"}.get(low)
             if not choice:
                 self.prompt(PROMPTS["continue"])

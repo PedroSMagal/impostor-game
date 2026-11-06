@@ -28,8 +28,10 @@
 **Impostor** é um jogo de dedução social para **3 a 5 jogadores**, inspirado em jogos como *Among Us* e *Spyfall*.
 Todos recebem um **tema** (ex.: `COMIDA`). Todos os jogadores **normais** também recebem a **palavra secreta**
 (ex.: `FEIJÃO`), mas **um jogador sorteado é o Impostor** e **não sabe a palavra** — só conhece o tema.
-Em cada turno, **um jogador faz uma pergunta para TODOS os outros**, e cada um responde. O Impostor tenta se
-disfarçar sem saber a palavra e, no final, todos votam em quem acham que é o Impostor.
+O jogo é dividido em **turnos**. Em cada turno, **cada jogador faz uma pergunta para TODOS os outros** (um de cada
+vez), e todos respondem. **Quando todos já perguntaram, o turno acaba** e os jogadores votam — **em tempo real e de
+forma pública** — entre **CONTINUAR** (jogar outro turno) e **VOTAÇÃO** (votar no impostor). O Impostor tenta se
+disfarçar sem saber a palavra e, na votação final, todos escolhem quem acham que é o Impostor.
 
 ### 1.2 Regras implementadas
 
@@ -39,8 +41,8 @@ disfarçar sem saber a palavra e, no final, todos votam em quem acham que é o I
 | 2 | A partida só começa quando há **≥ 3 jogadores e todos** enviaram `player_ready`. | `server.py › _maybe_start` |
 | 3 | O servidor **sorteia** um tema, uma palavra e **1 Impostor**. | `server.py › _run_game` |
 | 4 | Jogadores normais recebem **tema + palavra**; o Impostor recebe **só o tema** e o aviso de que é o Impostor. | `role_assign` (enviado individualmente) |
-| 5 | **Rodadas por turnos controlados pelo servidor:** em cada turno, **um jogador faz UMA pergunta para TODOS os outros**; o servidor faz **broadcast** da pergunta e, em seguida, chama **cada um dos demais, um por vez**, para responder, retransmitindo cada resposta à sala. Em uma rodada, **cada jogador pergunta uma vez**. | `server.py › _play_round` |
-| 6 | Após **3 rodadas** (configurável: `--rounds`), o servidor pergunta: *"Desejam votar no impostor ou jogar mais uma rodada?"*. Se a **maioria** escolher votar, abre a votação. | `server.py › _ask_continue` |
+| 5 | **Turnos controlados pelo servidor:** um **turno** termina quando **todos os jogadores já fizeram uma pergunta**. Para cada perguntador (ordem sorteada pelo servidor), ele faz **UMA pergunta para TODOS os outros**; o servidor faz **broadcast** da pergunta e chama **cada um dos demais, um por vez**, para responder, retransmitindo cada resposta à sala. | `server.py › _play_turn` |
+| 6 | **Ao fim de CADA turno** (quando todos já perguntaram), o servidor abre a decisão: *"Continuar (outro turno) ou Votação (do impostor)?"*. Cada jogador vota e **a sala vê em tempo real quem votou em Votação e quem votou em Continuar**. Se a **maioria** escolher Votação, abre a votação do impostor; senão, começa outro turno. | `server.py › _ask_continue` |
 | 7 | **Votação:** cada jogador envia seu voto ao servidor. | `server.py › _voting_phase` |
 | 8 | Mais votado **não** é o Impostor → **Impostor vence**. | `_voting_phase` |
 | 9 | Mais votado **é** o Impostor → ele perde a votação, **mas ganha uma chance de adivinhar a palavra**. | `server.py › _guess_phase` |
@@ -50,10 +52,12 @@ disfarçar sem saber a palavra e, no final, todos votam em quem acham que é o I
 
 * **Empate na votação** (dois ou mais jogadores com o mesmo número de votos no topo, ou nenhum voto) →
   ninguém é eliminado → o **Impostor vence**.
-* **"Maioria"** para votar significa **mais da metade dos jogadores presentes**. **Empate ou omissão =
-  mais uma rodada.** Para o jogo não ser infinito, ao atingir `--max-rounds` (padrão 10) a votação é obrigatória.
+* **"Maioria"** para ir à votação do impostor significa **mais da metade dos jogadores presentes**. **Empate ou omissão =
+  Continuar (outro turno).** Para o jogo não ser infinito, ao atingir `--max-turns` (padrão 5) a votação do impostor é obrigatória.
 * **Respostas em sequência e públicas:** cada resposta é retransmitida na hora, então quem responde depois já viu as
-  respostas anteriores (é aí que o Impostor tenta se camuflar). A ordem de quem pergunta é sorteada a cada rodada.
+  respostas anteriores (é aí que o Impostor tenta se camuflar). A ordem de quem pergunta é sorteada a cada turno (todos perguntam exatamente uma vez por turno) e a ordem de quem responde é sorteada a cada pergunta.
+* **Decisão pública e ao vivo:** diferentemente da votação final do impostor (que só revela os votos na apuração), os votos de
+  *Continuar x Votação* são mostrados a todos **assim que são dados**, com o placar parcial e quem ainda falta votar.
 * **Ninguém vota em si mesmo** (o servidor rejeita).
 * O palpite do Impostor ignora **acentos, maiúsculas e espaços extras** (`feijao` = `FEIJÃO`).
 * **Tempo limite:** se um jogador não agir no prazo (padrão 60 s para perguntar/responder, 45 s para votar),
@@ -64,31 +68,41 @@ disfarçar sem saber a palavra e, no final, todos votam em quem acham que é o I
 ### 1.3 Visão geral do fluxo de uma partida
 
 ```
- LOBBY ──► RODADAS (N turnos por rodada) ──► "votar ou continuar?" ──► VOTAÇÃO ──┬──► Impostor vence
-   ▲            ▲                                   │                             │
-   │            └────────── "continuar" ◄───────────┘                             └──► Impostor descoberto ──► PALPITE ──► Empate / Impostor perde
-   └───────────────────────────────── nova partida ◄───────────────────────────────────────────────────────────────────────────┘
+ LOBBY ──► TURNO (todos perguntam, 1 de cada vez) ──► fim do turno: CONTINUAR x VOTAÇÃO (ao vivo) ──► VOTAÇÃO DO IMPOSTOR ──┬──► Impostor vence
+   ▲               ▲                                         │                                                           │
+   │               └──────────── "Continuar" (outro turno) ◄─┘                                                           └──► Impostor descoberto ──► PALPITE ──► Empate / Impostor perde
+   └───────────────────────────────────────── nova partida ◄────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-**Como os turnos funcionam.** A cada rodada o servidor **embaralha a ordem de quem pergunta**. Em cada turno:
+**Como um turno funciona.** O servidor sorteia a ordem dos perguntadores. Para **cada** perguntador:
 
-1. o servidor convida o **perguntador** (`turn_ask`) e ele envia **uma pergunta** (`send_question`);
+1. o servidor convida o **perguntador** (`ask_prompt`) e ele envia **uma pergunta** (`send_question`);
 2. o servidor retransmite a pergunta a **toda a sala** (`broadcast_question`);
-3. **todos os outros jogadores** respondem, **um de cada vez**, na ordem circular que vem depois do perguntador
-   (`turn_answer` → `send_answer` → `broadcast_answer`, repetido para cada um).
+3. **todos os outros jogadores** respondem, **um de cada vez**, numa ordem sorteada
+   (`answer_prompt` → `send_answer` → `broadcast_answer`, repetido para cada um).
 
-Numa rodada com **N** jogadores há **N perguntas** e **N × (N − 1) respostas**. Com 4 jogadores, por exemplo, uma
-rodada tem 4 perguntas e 12 respostas. Para partidas mais rápidas, use `--rounds 1`.
+Depois que **todos** os jogadores fizeram a sua pergunta, o servidor encerra o turno (`turn_end`).
+Com **N** jogadores, um turno completo tem **N perguntas e N × (N − 1) respostas** (com 4 jogadores: 4 perguntas e 12 respostas).
 
-### 1.4 Exemplo de partida (visão de um jogador normal, sala com 3 jogadores)
+**Decisão ao fim do turno (em tempo real).** O servidor abre a decisão (`ask_continue`): cada jogador envia `vote`
+(**Votação**) ou `continue` (**Continuar**). **A cada voto**, o servidor retransmite à sala o placar parcial
+(`continue_vote_cast`): quem votou em Votação, quem votou em Continuar e quem ainda falta. Quando todos votam (ou o
+tempo acaba), o servidor anuncia o resultado (`continue_result`). Se **mais da metade** escolheu Votação, começa a
+votação do impostor; caso contrário (inclusive em empate ou omissão), começa **outro turno**.
+Com `--min-turns` (padrão 1) você define quantos turnos completos são jogados antes da primeira decisão.
+
+### 1.4 Exemplo de partida (visão de **Ana**, jogadora normal, sala com 3 jogadores)
 
 ```
 >>> Você é um JOGADOR NORMAL.
     Tema: COMIDA   |   Palavra secreta: FEIJÃO
 
------ RODADA 1  (ordem: Caio > Ana > Bia) -----
+============================================================
+ TURNO 1  -  todos perguntam uma vez. Ordem das perguntas: Caio > Ana > Bia
+============================================================
 
-[turno 1/3] Vez de Caio fazer uma pergunta para todos...
+----- Pergunta 1/3 (turno 1) -----
+Vez de Caio fazer uma pergunta para todos...
   [PERGUNTA] Caio (para todos): Você come isso no almoço?
 
 *** Sua vez de RESPONDER (1/2) à pergunta de Caio: "Você come isso no almoço?"
@@ -97,9 +111,43 @@ rodada tem 4 perguntas e 12 respostas. Para partidas mais rápidas, use `--round
   Aguardando Bia responder (2/2)...
   [RESPOSTA] Bia: Depende do dia.
 
-*** SUA VEZ! Faça UMA pergunta sobre a palavra para TODOS os outros. (turno 2/3)
+----- Pergunta 2/3 (turno 1) -----
+*** SUA VEZ! Faça UMA pergunta sobre a palavra para TODOS os outros.
     Quem vai responder, em ordem: Bia, Caio
-  -> Digite sua PERGUNTA: _
+  -> Digite sua PERGUNTA: Combina com arroz?
+  ... (respostas de Bia e Caio) ...
+
+----- Pergunta 3/3 (turno 1) -----
+  ... (pergunta de Bia e as respostas) ...
+
+===== Fim do turno 1: todos já fizeram sua pergunta =====
+
+############################################################
+ Fim do turno 1: todos já fizeram sua pergunta. Desejam continuar (outro turno) ou ir para a Votação do impostor?
+ (maioria absoluta precisa escolher VOTAÇÃO; empate ou omissão = CONTINUAR)
+ Os votos aparecem na tela em tempo real.
+############################################################
+  -> [v] VOTAÇÃO (votar no impostor)  |  [c] CONTINUAR (outro turno): c
+
+  >> Ana votou em CONTINUAR  (1/3 votos)
+      VOTAÇÃO   (0): -
+      CONTINUAR (1): Ana
+      aguardando    : Bia, Caio
+
+  >> Caio votou em VOTAÇÃO  (2/3 votos)
+      VOTAÇÃO   (1): Caio
+      CONTINUAR (1): Ana
+      aguardando    : Bia
+
+  >> Bia votou em CONTINUAR  (3/3 votos)
+      VOTAÇÃO   (1): Caio
+      CONTINUAR (2): Ana, Bia
+      aguardando    : -
+
+--- Resultado final da decisão ---
+  VOTAÇÃO   (1): Caio
+  CONTINUAR (2): Ana, Bia
+  =>  CONTINUAR: começa outro turno.
 ```
 
 ### 1.5 Como executar (resumo)
@@ -132,7 +180,7 @@ Siga os prompts `->` na tela. Comandos: `/ajuda`, `/ping` (mede latência), `/sa
 ### 2.1 Executando o servidor
 
 ```bash
-python3 server.py [--host 0.0.0.0] [--port 5000] [--rounds 3] [--max-rounds 10]
+python3 server.py [--host 0.0.0.0] [--port 5000] [--min-turns 1] [--max-turns 5]
                   [--turn-timeout 60] [--vote-timeout 45]
 ```
 
@@ -140,10 +188,10 @@ python3 server.py [--host 0.0.0.0] [--port 5000] [--rounds 3] [--max-rounds 10]
 |-----------|--------|-------------|
 | `--host` | `0.0.0.0` | Interface de escuta (`0.0.0.0` = todas). |
 | `--port` | `5000` | Porta TCP. |
-| `--rounds` | `3` | Rodadas jogadas antes da 1ª pergunta "votar ou continuar?" (**número configurável**). Uma rodada = cada jogador pergunta uma vez a todos os outros. |
-| `--max-rounds` | `10` | Ao atingir este limite, a votação é obrigatória. |
-| `--turn-timeout` | `60` | Segundos para perguntar, responder ou palpitar. |
-| `--vote-timeout` | `45` | Segundos para votar / decidir "votar ou continuar". |
+| `--min-turns` | `1` | Turnos **completos** (todos perguntaram) antes da 1ª decisão *Continuar x Votação* (**número configurável**). Com `1`, a decisão acontece ao fim de **todo** turno. |
+| `--max-turns` | `5` | Ao atingir este número de turnos, a votação do impostor é obrigatória (sem nova decisão). |
+| `--turn-timeout` | `60` | Segundos para cada pergunta, resposta ou palpite. |
+| `--vote-timeout` | `45` | Segundos para votar / decidir "Continuar x Votação". |
 
 ### 2.2 Executando os clientes
 
@@ -170,7 +218,7 @@ Se um único pacote `send_vote` ou `role_assign` fosse perdido, o jogo travaria 
 falha. Com UDP, teríamos que reimplementar ACKs, timers e retransmissão na aplicação — reinventando o TCP.
 
 ### 3.2 Entrega ordenada
-O estado do jogo é uma **sequência causal**: `turn_ask → broadcast_question → turn_answer → broadcast_answer`.
+O estado do jogo é uma **sequência causal**: `ask_prompt → broadcast_question → answer_prompt → broadcast_answer`.
 Se uma resposta chegasse antes da pergunta, o cliente exibiria algo incoerente. O TCP entrega os bytes **na
 ordem em que foram enviados** (reordenação tratada pelos números de sequência), o que dispensa numeração de
 mensagens e *buffers* de reordenação na aplicação.
@@ -252,7 +300,8 @@ encerrada para proteger o servidor).
 {"type":"player_join","data":{"name":"Ana","protocol":"IMPOSTOR/1.0"}}
 {"type":"role_assign","data":{"role":"CIVILIAN","theme":"COMIDA","word":"FEIJÃO"}}
 {"type":"role_assign","data":{"role":"IMPOSTOR","theme":"COMIDA","word":null}}
-{"type":"turn_ask","data":{"round":1,"turn":1,"turns":3,"asker":"Caio","responders":["Ana","Bia"],"timeout":60}}
+{"type":"ask_prompt","data":{"turn":1,"step":1,"steps":3,"asker":"Caio","responders":["Ana","Bia"],"timeout":60}}
+{"type":"continue_vote_cast","data":{"voter":"Ana","choice":"continue","voters_vote":[],"voters_continue":["Ana"],"waiting":["Bia","Caio"],"received":1,"total":3}}
 {"type":"send_question","data":{"text":"Você come isso no almoço?"}}
 {"type":"send_vote","data":{"target":"Caio"}}
 {"type":"end_game","data":{"result":"DRAW","message":"...","impostor":"Caio","theme":"COMIDA","word":"FEIJÃO","guess":"feijao"}}
@@ -278,20 +327,20 @@ padrão. O JSON escapa `\n` dentro de strings, portanto **uma quebra de linha re
 | Estado | Descrição | Eventos aceitos dos clientes |
 |--------|-----------|------------------------------|
 | `WAIT_PLAYERS` | Lobby: aceita conexões (≤ 5) e aguarda `player_ready` de todos (≥ 3). | `player_join`, `player_ready`, `ping`, `player_quit` |
-| `IN_GAME` | Fase de rodadas: perguntas e respostas por turnos. | `send_question` (só do `asker`), `send_answer` (só do jogador cuja vez de responder foi anunciada), `ping`, `player_quit` |
-| `DECIDING` | "Votar no impostor ou jogar mais uma rodada?" | `send_continue_vote` (todos), `ping`, `player_quit` |
+| `IN_GAME` | Turno em andamento: cada jogador pergunta a todos (um por vez) e todos respondem. | `send_question` (só do `asker`), `send_answer` (só do jogador cuja vez de responder foi anunciada), `ping`, `player_quit` |
+| `DECIDING` | **Fim do turno (todos já perguntaram):** decisão **Continuar x Votação**, com os votos exibidos **em tempo real**. | `send_continue_vote` (todos), `ping`, `player_quit` |
 | `VOTING` | Cada jogador vota em quem acredita ser o Impostor. | `send_vote` (todos), `ping`, `player_quit` |
 | `GUESSING` | Impostor descoberto tenta adivinhar a palavra (chance de empate). | `send_guess` (só do Impostor), `ping`, `player_quit` |
 | `END_GAME` | Resultado final é anunciado; em seguida volta a `WAIT_PLAYERS`. | `ping`, `player_quit` |
 
 ```
                     todos "pronto" (≥3)
- ┌────────────────┐ ────────────────────► ┌──────────┐  após ≥ R rodadas  ┌──────────┐
+ ┌────────────────┐ ────────────────────► ┌──────────┐ fim de CADA turno  ┌──────────┐
  │  WAIT_PLAYERS  │                       │ IN_GAME  │ ─────────────────► │ DECIDING │
  └────────────────┘ ◄──┐                  └──────────┘ ◄───────────────── └──────────┘
-        ▲              │                      ▲   "continuar" (ou empate)       │ maioria absoluta
-        │ (reset +     │                      │                                  │ "votar" (ou limite
-        │  1 segundo)  │                      └──────────────────────────────────┘  de rodadas)
+        ▲              │                      ▲   "Continuar" (ou empate)     │ maioria absoluta
+        │ (reset +     │                      │                                  │ "Votação" (ou limite
+        │  1 segundo)  │                      └──────────────────────────────────┘  de turnos)
         │              │                                                          ▼
  ┌──────────────┐      │  Impostor NÃO foi o mais votado          ┌─────────┐
  │   END_GAME   │ ◄────┼───────────────────────────────────────── │ VOTING  │
@@ -319,7 +368,7 @@ define o que o teclado do usuário significa naquele momento.
 | `IN_GAME` + `pending=ask` | É a vez de **perguntar a todos**. | texto → `send_question` |
 | `IN_GAME` + `pending=answer` | É a vez de **responder**. | texto → `send_answer` |
 | `IN_GAME` + `pending=None` | Aguardando os outros jogadores. | ignorada (aviso "aguarde") |
-| `DECIDING` + `pending=continue` | Decisão coletiva. | `v` / `c` → `send_continue_vote` |
+| `DECIDING` + `pending=continue` | Decisão coletiva (placar ao vivo na tela). | `v` (Votação) / `c` (Continuar) → `send_continue_vote` |
 | `VOTING` + `pending=vote` | Votação. | número/nome → `send_vote` |
 | `GUESSING` + `pending=guess` | (Só o Impostor descoberto) palpite. | texto → `send_guess` |
 | `END_GAME` | Resultado exibido. | — (logo volta a `WAIT_PLAYERS`) |
@@ -339,7 +388,7 @@ por exemplo, estourou o tempo), e é **restaurada** quando o servidor responde `
 | `player_ready` | `{}` | `WAIT_PLAYERS` | Marca o jogador como pronto. |
 | `send_question` | `{text}` | `IN_GAME` (turno do `asker`) | Envia a pergunta do turno, dirigida a **todos** os outros jogadores. |
 | `send_answer` | `{text}` | `IN_GAME` (vez do `responder`) | Envia a resposta à pergunta atual. Cada jogador responde uma vez por pergunta. |
-| `send_continue_vote` | `{choice}` | `DECIDING` | `choice` ∈ {`"vote"`, `"continue"`}. |
+| `send_continue_vote` | `{choice}` | `DECIDING` | `choice` = `"vote"` (**Votação**) ou `"continue"` (**Continuar**). O voto é **público**: o servidor o retransmite na hora (`continue_vote_cast`). |
 | `send_vote` | `{target}` | `VOTING` | Nome do jogador em quem vota (≠ si mesmo). |
 | `send_guess` | `{word}` | `GUESSING` (só Impostor) | Palpite da palavra secreta. |
 | `ping` | `{t}` | qualquer | Medição de latência (RTT). |
@@ -353,17 +402,18 @@ por exemplo, estourou o tempo), e é **restaurada** quando o servidor responde `
 | `join_rejected` | 1 jogador | `{reason}` | Entrada recusada (sala cheia, nome duplicado, versão incompatível, partida em andamento, nome inválido). A conexão é fechada. |
 | `lobby_update` | todos | `{players:[{name,ready}], notice, min_players, max_players}` | Lista da sala; emitido a cada entrada/saída/`player_ready`. |
 | `state_change` | todos | `{state}` | Nova transição da máquina de estados. |
-| `start_game` | todos | `{players, theme, rounds_before_vote, max_rounds, turn_timeout}` | A partida começou; **tema** é público. |
+| `start_game` | todos | `{players, theme, min_turns, max_turns, turn_timeout}` | A partida começou; **tema** é público. |
 | `role_assign` | **individual** | `{role, theme, word}` | `role` ∈ {`CIVILIAN`,`IMPOSTOR`}; `word` é `null` para o Impostor. |
-| `round_start` | todos | `{round, order}` | Início de rodada e ordem sorteada. |
-| `turn_ask` | todos | `{round, turn, turns, asker, responders, timeout}` | **Convite** para `asker` fazer uma pergunta a **todos**; `responders` é a ordem em que os demais responderão. |
-| `broadcast_question` | todos | `{round, asker, text}` | Retransmissão da pergunta para toda a sala. |
-| `turn_answer` | todos | `{round, asker, responder, question, position, total, timeout}` | **Convite** para `responder` responder (é o `position`-ésimo de `total`). Enviado uma vez para cada respondente. |
-| `broadcast_answer` | todos | `{round, asker, responder, question, text}` | Retransmissão da resposta, na hora, para toda a sala. |
-| `turn_timeout` | todos | `{player, action, reason}` | Jogador não agiu (tempo/queda); turno pulado. |
-| `round_end` | todos | `{round}` | Fim da rodada. |
-| `ask_continue` | todos | `{round, options, message, timeout}` | "Desejam votar no impostor ou jogar mais uma rodada?" |
-| `continue_result` | todos | `{votes_vote, votes_continue, abstentions, decision}` | Resultado da decisão (`vote` ou `continue`). |
+| `turn_start` | todos | `{turn, order}` | Início de um turno e ordem sorteada dos perguntadores (todos perguntam uma vez). |
+| `ask_prompt` | todos | `{turn, step, steps, asker, responders, timeout}` | **Convite** para `asker` fazer **uma** pergunta a **todos**; `responders` é a ordem em que os demais responderão. `step`/`steps` = posição na fila de perguntadores. |
+| `broadcast_question` | todos | `{turn, step, asker, text}` | Retransmissão da pergunta para toda a sala. |
+| `answer_prompt` | todos | `{turn, asker, responder, question, position, total, timeout}` | **Convite** para `responder` responder (é o `position`-ésimo de `total`). Enviado uma vez para cada respondente. |
+| `broadcast_answer` | todos | `{turn, asker, responder, question, text}` | Retransmissão da resposta, na hora, para toda a sala. |
+| `action_timeout` | todos | `{player, action, reason}` | Jogador não agiu (tempo/queda); esse passo é pulado e o jogo segue. |
+| `turn_end` | todos | `{turn}` | **Todos já perguntaram:** o turno acabou. |
+| `ask_continue` | todos | `{turn, options, message, timeout}` | Abre a decisão *Continuar x Votação* ao fim do turno. |
+| `continue_vote_cast` | todos | `{voter, choice, voters_vote, voters_continue, waiting, received, total}` | **Tempo real:** enviado a **cada voto** da decisão — quem votou em **Votação**, quem votou em **Continuar**, quem ainda falta. |
+| `continue_result` | todos | `{votes_vote, votes_continue, abstentions, voters_vote, voters_continue, abstained, decision}` | Resultado final (`vote` = ir à votação do impostor; `continue` = outro turno), com os nomes de cada lado. |
 | `start_vote` | todos | `{candidates, timeout}` | Abre a votação. |
 | `vote_progress` | todos | `{received, total}` | Progresso (sem revelar votos). |
 | `vote_result` | todos | `{ballot, tally, accused, tie, impostor_caught}` | Apuração pública. |
@@ -404,7 +454,7 @@ Legenda: `C1..C3` = clientes (C2 será o Impostor neste exemplo), `S` = servidor
  │                                                        │  ≥3 jogadores e todos prontos ⇒ inicia
 ```
 
-#### 4.4.2 Início da partida e rodada
+#### 4.4.2 Início da partida e um turno completo
 
 ```
  S: sorteia tema, palavra e Impostor (C2)
@@ -413,32 +463,39 @@ Legenda: `C1..C3` = clientes (C2 será o Impostor neste exemplo), `S` = servidor
  │ ◄── role_assign {CIVILIAN, COMIDA, "FEIJÃO"} ───────── C1 (individual)
  │                  role_assign {IMPOSTOR, COMIDA, null} ► C2 (individual)
  │ ◄── role_assign {CIVILIAN, COMIDA, "FEIJÃO"} ───────── C3 (individual)
- │ ◄── round_start {round:1, order:[C3,C1,C2]} ─────────── ►►
+ │ ◄── turn_start {turn:1, order:[C3,C1,C2]} ───────────── ►►    (todos vão perguntar, nesta ordem)
 
- ── Turno 1: C3 pergunta a TODOS (respondem C1 e depois C2) ──
- │ ◄── turn_ask {asker:C3, responders:[C1,C2]} ─────────── ►►
+ ── Pergunta 1/3: C3 pergunta a TODOS (respondem C1 e depois C2, ordem sorteada) ──
+ │ ◄── ask_prompt {turn:1, step:1, steps:3, asker:C3, responders:[C1,C2]} ►►
  │                                    C3 ── send_question {text} ──► S
  │      (se C1 ou C2 enviassem algo agora: S ► error NOT_YOUR_TURN)
  │ ◄── broadcast_question {C3, text} ───────────────────── ►►
- │ ◄── turn_answer {responder:C1, position:1, total:2} ─── ►►
+ │ ◄── answer_prompt {responder:C1, position:1, total:2} ─ ►►
  │ C1 ── send_answer {text} ───────────────────────────────► S
  │ ◄── broadcast_answer {C1, text} ─────────────────────── ►►
- │ ◄── turn_answer {responder:C2, position:2, total:2} ─── ►►
+ │ ◄── answer_prompt {responder:C2, position:2, total:2} ─ ►►
  │ C2 ── send_answer {text} ───────────────────────────────► S
  │ ◄── broadcast_answer {C2, text} ─────────────────────── ►►    (C2 já viu a resposta de C1)
- ── Turnos 2..N análogos (em cada rodada, cada jogador pergunta uma vez) ──
- │ ◄── round_end {round:1} ─────────────────────────────── ►►
+
+ ── Pergunta 2/3: C1 pergunta a todos ... (idem) ──
+ ── Pergunta 3/3: C2 pergunta a todos ... (idem) ──
+ │ ◄── turn_end {turn:1} ───────────────────────────────── ►►    (todos já perguntaram: fim do turno)
 ```
 
-#### 4.4.3 Decisão, votação e resolução
+#### 4.4.3 Decisão ao fim de cada turno (ao vivo), votação do impostor e resolução
 
 ```
- (após --rounds rodadas)
+ (ao fim de CADA turno, a partir de --min-turns)
  │ ◄── state_change {DECIDING} ─────────────────────────── ►►
- │ ◄── ask_continue {"Desejam votar no impostor ou jogar mais uma rodada?"} ►►
- │ C1,C2,C3 ── send_continue_vote {choice:"vote"|"continue"} ──► S
- │ ◄── continue_result {votes_vote:2, votes_continue:1, decision:"vote"} ►►
- │        └─ decision="continue" ⇒ state_change {IN_GAME} e nova rodada (volta ao 4.4.2)
+ │ ◄── ask_continue {turn:1, "Continuar (outro turno) ou Votação do impostor?"} ►►
+ │ C1 ── send_continue_vote {choice:"continue"} ──────────► S
+ │ ◄── continue_vote_cast {voter:C1, voters_vote:[], voters_continue:[C1], waiting:[C2,C3]} ►►   ← TEMPO REAL
+ │ C3 ── send_continue_vote {choice:"vote"} ──────────────► S
+ │ ◄── continue_vote_cast {voter:C3, voters_vote:[C3], voters_continue:[C1], waiting:[C2]} ►►   ← TEMPO REAL
+ │ C2 ── send_continue_vote {choice:"vote"} ──────────────► S
+ │ ◄── continue_vote_cast {voter:C2, voters_vote:[C3,C2], voters_continue:[C1], waiting:[]} ►►
+ │ ◄── continue_result {votes_vote:2, votes_continue:1, voters_vote:[C3,C2], voters_continue:[C1], decision:"vote"} ►►
+ │        └─ decision="continue" ⇒ state_change {IN_GAME} e começa o turno 2 (volta ao 4.4.2)
 
  │ ◄── state_change {VOTING} ───────────────────────────── ►►
  │ ◄── start_vote {candidates:[C1,C2,C3]} ──────────────── ►►
@@ -465,12 +522,12 @@ Legenda: `C1..C3` = clientes (C2 será o Impostor neste exemplo), `S` = servidor
 
 ```
  Entrada recusada:   C ── player_join ──► S ── join_rejected {reason} ──► C   (S fecha o socket)
- Tempo esgotado:     S ►► turn_timeout {player, action, reason:"timeout"}  → turno é pulado
+ Tempo esgotado:     S ►► action_timeout {player, action, reason:"timeout"}  → esse passo é pulado
  Queda de jogador:   (FIN/RST) S ►► info {"X desconectou-se."}
                        • no lobby          → lobby_update
                        • no jogo, Impostor caiu ou restam < 3 jogadores
                                            → end_game {result:"ABORTED"}
-                       • no jogo, caso contrário → o turno do jogador é pulado
+                       • no jogo, caso contrário → os passos do jogador são pulados
  Mensagem inválida:  C ── "lixo" ──► S ── error {BAD_MESSAGE} ──► C           (conexão mantida)
  Latência:           C ── ping {t} ──► S ── pong {t} ──► C   (RTT = agora − t)
 ```
@@ -511,19 +568,22 @@ controlado por um script; outra parte usou clientes descartáveis que falam o pr
 
 | Teste | Resultado |
 |-------|-----------|
-| 4 instâncias reais do `client.py`, partida completa | ✅ 4 perguntas e 12 respostas na rodada (cada pergunta respondida pelos 3 outros, um por vez) |
-| Várias partidas seguidas, votos aleatórios (volta ao lobby e revanche) | ✅ `IMPOSTOR_WINS` e `IMPOSTOR_LOSES` observados |
+| 4 instâncias reais do `client.py`: turno 1 → "Continuar", turno 2 → "Votação" | ✅ 2 turnos completos: 8 perguntas (cada jogador pergunta 1 vez por turno) e 24 respostas (cada pergunta respondida pelos 3 outros, um por vez) |
+| Decisão **em tempo real** | ✅ na tela de um dos clientes apareceram os 8 votos (2 decisões × 4 jogadores), um a um, cada um com o placar parcial (quem votou em Votação, em Continuar e quem falta) |
+| 7 partidas seguidas (volta ao lobby e revanche), votos aleatórios | ✅ exatamente 2 decisões por partida (após os turnos 1 e 2) |
 | Impostor descoberto + palpite **errado** | ✅ `IMPOSTOR_LOSES` |
 | Impostor descoberto + palpite **certo** (5 jogadores) | ✅ `DRAW` |
-| Rodada extra ("continuar" antes de "votar") | ✅ |
-| Jogador que **não responde** (prazo de 2 s) | ✅ `turn_timeout`, o turno é pulado e a partida termina normalmente |
-| **Queda de jogador comum** na hora de responder | ✅ `turn_timeout (disconnected)`, partida continua com os demais |
+| Impostor não descoberto / empate na votação | ✅ `IMPOSTOR_WINS` |
+| `--max-turns 2` com todos escolhendo "Continuar" | ✅ após o turno 2 a votação do impostor é forçada, sem nova decisão |
+| `--min-turns 2` | ✅ nenhuma decisão após o turno 1; a 1ª só aparece após o turno 2 |
+| Jogador que **não responde** (prazo de 2 s) | ✅ `action_timeout`, o passo é pulado e a partida termina normalmente |
+| **Queda de jogador comum** na hora de responder | ✅ `action_timeout (disconnected)`, partida continua com os demais |
 | **Queda do Impostor** | ✅ `end_game` com `ABORTED` |
 | 6º jogador recusado | ✅ `join_rejected` ("Sala cheia (5/5)") |
 | Nome duplicado, nome inválido, versão de protocolo incompatível, 1ª mensagem inválida | ✅ `join_rejected` |
 | JSON inválido após entrar / evento fora do estado | ✅ `error BAD_MESSAGE` / `INVALID_STATE`, conexão mantida |
 
-**Roteiro manual** para reproduzir (3 a 5 terminais): suba o servidor com `python3 server.py --rounds 1`, entre com
+**Roteiro manual** para reproduzir (3 a 5 terminais): suba o servidor com `python3 server.py`, entre com
 um `client.py` por terminal, digite `pronto` em todos e acompanhe o fluxo. Para testar o *timeout*, use
 `--turn-timeout 5` e deixe um jogador sem responder; para testar a queda, feche o terminal de um jogador no meio da vez.
 
@@ -544,9 +604,13 @@ $ nc 127.0.0.1 5000
   cliente, e códigos de erro padronizados.
 * **Servidor autoritativo:** o cliente não decide nada; mesmo um cliente modificado/malicioso não consegue agir fora de
   vez (`NOT_YOUR_TURN`), votar em si mesmo ou ver a palavra do Impostor (o segredo nem é enviado).
-* **Pergunta para todos, respostas em sequência e públicas:** o servidor sorteia a ordem de quem pergunta a cada rodada e
+* **Pergunta para todos, respostas em sequência e públicas:** o servidor mantém uma fila embaralhada de perguntadores e
   conduz cada respondente, um por vez, retransmitindo cada resposta na hora.
-* **Votação secreta com progresso público** (`vote_progress`) e **revelação simultânea** (`vote_result`).
+* **Decisão coletiva a cada turno, pública e em tempo real** (*Continuar x Votação*): o grupo controla o ritmo do jogo, e o
+  servidor retransmite **cada voto no momento em que acontece** (`continue_vote_cast`), com placar parcial e lista de quem
+  ainda falta. `--min-turns`/`--max-turns` definem os limites; maioria absoluta é exigida para ir à votação (empate = Continuar).
+* **Votação final do impostor secreta**, com progresso público (`vote_progress`) e **revelação simultânea** (`vote_result`) —
+  o contraste com a decisão *Continuar x Votação* (pública e ao vivo) é proposital.
 * **Robustez:** timeouts em todas as esperas, tratamento de queda de jogador, `ABORTED` seguro, limite de tamanho de mensagem,
   validação de nome/entradas, descarte de mensagens atrasadas (`_drain`).
 * **Revanche sem reconectar:** a sala volta ao lobby ao final da partida.

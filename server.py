@@ -11,7 +11,7 @@ Arquitetura
 * UMA THREAD POR CLIENTE (handle_client): lê as mensagens do jogador, valida
   o protocolo e as encaminha ao jogo.
 * UMA THREAD DE PARTIDA (_run_game): é o "árbitro". Ela executa a máquina de
-  estados do jogo (rodadas -> decisão -> votação -> palpite -> fim) e é a
+  estados do jogo (turnos -> decisão -> votação -> palpite -> fim) e é a
   única que decide de quem é a vez. As threads de cliente apenas depositam
   eventos numa fila (queue.Queue); a thread de partida consome essa fila.
   Assim, não há disputa entre threads pela lógica do jogo.
@@ -23,8 +23,8 @@ Mensagens JSON em UTF-8, uma por linha (delimitador '\\n'):
     {"type": "<evento>", "data": {...}}
 
 Uso:
-    python3 server.py [--host 0.0.0.0] [--port 5000] [--rounds 3]
-                      [--max-rounds 10] [--turn-timeout 60] [--vote-timeout 45]
+    python3 server.py [--host 0.0.0.0] [--port 5000] [--min-turns 1]
+                      [--max-turns 5] [--turn-timeout 60] [--vote-timeout 45]
 
 Somente biblioteca padrão (socket, threading, queue, json, ...).
 """
@@ -54,26 +54,136 @@ NAME_RE = re.compile(r"^[\w\-]{1,15}$")   # nomes: letras/dígitos/_/-, 1 a 15
 
 # Estados do servidor (máquina de estados da sala)
 WAIT_PLAYERS = "WAIT_PLAYERS"   # lobby: aguardando jogadores e "pronto"
-IN_GAME = "IN_GAME"             # rodadas de perguntas e respostas
-DECIDING = "DECIDING"           # "votar ou jogar mais uma rodada?"
+IN_GAME = "IN_GAME"             # turno: cada jogador pergunta a todos, e todos respondem
+DECIDING = "DECIDING"           # fim de CADA turno: "Continuar" ou "Votação"? (ao vivo)
 VOTING = "VOTING"               # cada jogador vota no suspeito
 GUESSING = "GUESSING"           # impostor descoberto tenta adivinhar a palavra
 END_GAME = "END_GAME"           # resultado final
 
 # Temas e palavras secretas (o servidor sorteia um tema e uma palavra)
 THEMES = {
-    "COMIDA": ["FEIJÃO", "PIZZA", "LASANHA", "SUSHI", "CHURRASCO",
-               "BRIGADEIRO", "TAPIOCA", "ACARAJÉ", "MOQUECA"],
-    "ANIMAIS": ["CACHORRO", "ELEFANTE", "GOLFINHO", "PAPAGAIO",
-                "TARTARUGA", "CAMELO", "PINGUIM", "JACARÉ"],
-    "PROFISSÕES": ["MÉDICO", "PROFESSOR", "BOMBEIRO", "PILOTO",
-                   "PADEIRO", "ENGENHEIRO", "ADVOGADO", "DENTISTA"],
-    "LUGARES": ["PRAIA", "AEROPORTO", "BIBLIOTECA", "HOSPITAL",
-                "ESTÁDIO", "SHOPPING", "RODOVIÁRIA", "CINEMA"],
-    "OBJETOS": ["GELADEIRA", "VIOLÃO", "BICICLETA", "ÓCULOS",
-                "GUARDA-CHUVA", "TELEFONE", "RELÓGIO", "TESOURA"],
-    "REDES": ["ROTEADOR", "SOCKET", "FIREWALL", "SERVIDOR",
-              "PROTOCOLO", "SWITCH", "PACOTE", "GATEWAY"],
+    "COMIDAS": [
+        "HAMBÚRGUER DE SIRI", "LASANHA", "CERVEJA AMANTEIGADA",
+        "ESPINAFRE", "COGUMELO", "BISCOITO SCOOBY",
+        "ROSQUINHA", "MACARRÃO COM SALSICHA", "SEMENTES DOS DEUSES",
+        "TORTA DE MAÇÃ", "POÇÃO POLISSUCO",
+        "SANDUÍCHE DE MORTADELA", "CHURROS", "HAMBÚRGUER KRUSTY",
+        "AMBROSIA DOS DEUSES", "RAMEN", "FRUTA DO DIABO",
+        "MAÇÃ DOURADA", "QUEIJO SUÍÇO", "SORVETE NAPOLITANO",
+        "HIDROMEL", "RAÇÃO HUMANA",
+        "PÃO DE QUEIJO MÁGICO", "COXINHA DE RODOVIÁRIA", "ACARAJÉ COM PIMENTA"
+    ],
+    
+    "ANIMAIS E PETS": [
+        "SCOOBY-DOO", "PIKACHU", "GARFIELD", "CORAGEM", 
+        "PERRY O ORNITORRINCO", "EDWIGES", "YOSHI", "PICA-PAU",
+        "SONIC", "BURRO", "BANGUELA", "PUMBA",
+        "TIMÃO", "APPA", "MOMO", "RAPOSA DE NOVE CAUDAS",
+        "GATO DE BOTAS", "TOM", "JERRY", "PERNALONGA",
+        "PATOLINO", "TOTORO", "REX", "SNOOPY",
+        "BRIAN GRIFFIN", "BOJACK HORSEMAN", "DINO", 
+        "CACHORRO", "VIRA-LATA CARAMELO", "GALO CEGO"
+    ],
+    
+    "PROFISSÕES": [
+        "CAÇADOR DE RECOMPENSAS", "PROFESSOR DE DEFESA CONTRA AS TREVAS", "ENCANADOR",
+        "ENTREGADOR DE PIZZA", "MESTRE POKÉMON", "MESTRE JEDI", "CAÇA-FANTASMAS",
+        "FEITICEIRO", "ALQUIMISTA FEDERAL", "DOMINADOR DE ELEMENTOS",
+        "FABRICANTE DE CRISTAL", "PILOTO DE ROBO GIGANTE", "NINJA",
+        "PRESIDENTE", "GUARDA", "FUNCIONÁRIO DE ESCRITÓRIO",
+        "SENHOR DO TEMPO", "XERIFE", "CAÇADOR DE MONSTROS",
+        "AGENTE SECRETO", "SEMIDEUS", "OPERADOR",
+        "PIRATA", "GUARDIÃO DA GALÁXIA", "VINGADOR",
+        "MOTORISTA DE FUGA", "DETETIVE SOBRENATURAL", "AGIOTA",
+        "TESTADOR DE COLCHÕES", "JUIZ DE RINHA DE GALO"
+    ],
+    
+    "LUGARES": [
+        "FENDA DO BIQUÍNI", "ASILO ARKHAM", "VILA",
+        "HOGWARTS", "ACAMPAMENTO MEIO-SANGUE", "ESTRELA DA MORTE", "BAIRRO DO LIMOEIRO",
+        "MORDOR", "WAKANDA", "CENTRAL PERK",
+        "TAVERNA", "ESCRITÓRIO", "VILA DA FOLHA",
+        "NAÇÃO DO FOGO", "ILHA DESERTA", "MUNDO INVERTIDO",
+        "BATECAVERNA", "FORTALEZA DA SOLIDÃO", "TARDIS",
+        "PORTO REAL", "SPRINGFIELD", "SIRI CASCUDO",
+        "CONDADO", "PLANETA NAMEKUSEI", "ASGARD",
+        "MONTE OLIMPO", "ESCOLA DE MAGIA", "CIDADE DE JACKSON",
+        "SEATTLE PÓS-APOCALÍPTICA", "SALA PRECISA"
+    ],
+    
+    "OBJETOS": [
+        "ANEL DO HOBBIT", "VARINHA DAS VARINHAS", "DEATH NOTE",
+        "ESCUDO", "MJOLNIR", "POKÉBOLA",
+        "CANIVETE", "SHURIKEN", "CHAPÉU SELETOR",
+        "ESPADA DE DIAMANTE", "CAPA DE INVISIBILIDADE", "PÍLULA VERMELHA",
+        "COROA", "LÂMPADA MÁGICA", "ESFERAS DO DRAGÃO",
+        "TAPETE MÁGICO", "ARMADURA", "LAÇO DA VERDADE",
+        "MÁSCARA", "TRIDENTE", "OMNITRIX",
+        "CUBO MÁGICO", "ESPELHO MÁGICO", "BATARANG",
+        "SABRE DE LUZ", "POKEDEX", "DADO DE VINTE LADOS",
+        "VIRA-TEMPO", "MANOPLA DO INFINITO", "BOMBA DE ABÓBORA"
+    ],
+    
+    "VEÍCULOS": [
+        "BATMÓVEL", "DELOREAN", "MILLENNIUM FALCON", 
+        "VASSOURA VOADORA", "MÁQUINA DE MISTÉRIO",
+        "X-WING", "TIE FIGHTER", "PÉROLA NEGRA",
+        "CARRO DE PEDRA", "NAVE ESPACIAL", "EXPRESSO",
+        "CARRUAGEM", "CARRO VERDE",
+        "CAMINHÃO", "HOVERBOARD",
+        "CAVALO", "TRENÓ",
+        "KOMBI", "UNO COM ESCADA NO TETO", "CELTA REBAIXADO",
+        "CARROÇA", "MOTO EM CHAMAS", "FOGUETE"
+    ],
+
+    "VILÕES E ANTAGONISTAS": [
+        "DARTH VADER", "VOLDEMORT", "CORINGA", "THANOS", "SAURON",
+        "FREEZA", "BOWSER", "DOUTOR EGGMAN", 
+        "SUKUNA", "PLANKTON", "MACACO LOUCO",
+        "EQUIPE ROCKET", "SCAR", "SENHOR BURNS", "DUENDE VERDE",
+        "MAGNETO", "LOKI", "REI DA NOITE", "AGENTE SMITH",
+        "EXTERMINADOR", "FREDDY KRUEGER", "JASON VOORHEES",
+        "PENNYWISE", "VILGAX", "CELL",
+        "OROCHIMARU", "LÍDER DOS VAGALUMES", "KRONOS",
+        "DARTH MAUL", "MADRASTA MÁ"
+    ],
+
+    "SUPERPODERES": [
+        "VOAR", "DOMINAR A ÁGUA", "DOMINAR O FOGO", 
+        "SOLTAR TEIA", "VISÃO DE CALOR", "FATOR DE CURA",
+        "SUPER VELOCIDADE", "FICAR INVISÍVEL", "LER MENTES",
+        "TELETRANSPORTE", "SUPER FORÇA", "MAGIA",
+        "CONTROLE DO MAGNETISMO", "CLONAGEM DAS SOMBRAS", "RASENGAN",
+        "EXPANSÃO DE DOMÍNIO", "SENTIDO ARANHA", "BAFO CONGELANTE",
+        "ELASTICIDADE", "FORMA TITÃ", "INVOCAR PATRONO",
+        "MUDAR DE FORMA", "RESPIRAR EMBAIXO D'ÁGUA", "CONTROLE DO CLIMA",
+        "ENCOLHER", "FICAR GIGANTE", "PARAR O TEMPO",
+        "HIPNOSE", "FALAR COM MÁQUINAS", "SER BILIONÁRIO"
+    ],
+
+    "MONSTROS E CRIATURAS": [
+        "ESTALADOR", "DEMOGORGON", "XENOMORFO",
+        "PREDADOR", "GODZILLA", "KING KONG", "VAMPIRO",
+        "LOBISOMEM", "MÚMIA", "MONSTRO DE FRANKENSTEIN", "CENTAURO",
+        "MINOTAURO", "CICLOPE", "DRAGÃO", "BASILISCO",
+        "DEMENTADOR", "CHUPACABRA", "MONSTRO DO LAGO NESS", "PÉ GRANDE",
+        "GREMLIN", "SLENDERMAN", "SIREN HEAD", "TIRANOSSAURO REX",
+        "TITÃ COLOSSAL", "CÉRBERO", "KRAKEN",
+        "BALROG", "SEREIA MALIGNA", "ZUMBI", "GÁRGULA"
+    ],
+
+    "MEMES DA INTERNET": [
+        "GRÁVIDA DE TAUBATÉ", "LUVA DE PEDREIRO", "CANETA AZUL", 
+        "NAZARÉ CONFUSA", "ET BILU", "RONALDINHO GAÚCHO",
+        "BAMBU", "MENINA FANTASMA DO ELEVADOR", "DOLLYNHO",
+        "ZÉ GOTINHA BOMBADO", "CAZE REAGINDO", "JOELMA BATENDO CABELO",
+        "FAUSTÃO DIZENDO ERROU", "VAMPETAÇO", "INÊS BRASIL",
+        "CHOQUE DE CULTURA", "GLÓRIA PIRES NO OSCAR", "CAPIVARA",
+        "E O PIX NADA AINDA", "FADA DO DENTE CALOTEIRA", "GRETCHEN",
+        "VELHO DA LANCHA", "SÓSIA DO NEYMAR", "CACHORRO CARAMELO SORRINDO",
+        "BOM DIA DE GRUPO DE FAMÍLIA", "ÁUDIO DO GEMIDÃO", "MENINO DO ACRE",
+        "REI DO CAMAROTE", "MEME DO CAIXÃO", "CABELEIREIRA LEILA"
+    ]
 }
 
 log = logging.getLogger("impostor.server")
@@ -169,12 +279,12 @@ class GameContext:
 # Servidor
 # --------------------------------------------------------------------------
 class GameServer:
-    def __init__(self, host, port, rounds_before_vote, max_rounds,
+    def __init__(self, host, port, min_turns, max_turns,
                  turn_timeout, vote_timeout):
         self.host = host
         self.port = port
-        self.rounds_before_vote = rounds_before_vote
-        self.max_rounds = max(max_rounds, rounds_before_vote)
+        self.min_turns = max(1, min_turns)            # turnos antes da 1ª decisão "Continuar x Votação"
+        self.max_turns = max(max_turns, self.min_turns)  # ao atingir, votação é obrigatória
         self.turn_timeout = turn_timeout
         self.vote_timeout = vote_timeout
 
@@ -420,8 +530,8 @@ class GameServer:
         """Fluxo completo da partida. Retorna (resultado, mensagem, extras)."""
         self._set_state(IN_GAME)
         self.broadcast("start_game", players=[p.name for p in ctx.participants],
-                       theme=ctx.theme, rounds_before_vote=self.rounds_before_vote,
-                       max_rounds=self.max_rounds, turn_timeout=self.turn_timeout)
+                       theme=ctx.theme, min_turns=self.min_turns,
+                       max_turns=self.max_turns, turn_timeout=self.turn_timeout)
         # Papéis são enviados individualmente: o Impostor NÃO recebe a palavra.
         for p in ctx.participants:
             if p is ctx.impostor:
@@ -429,15 +539,17 @@ class GameServer:
             else:
                 p.send("role_assign", role="CIVILIAN", theme=ctx.theme, word=ctx.word)
 
-        round_no = 0
+        # Um TURNO termina quando TODOS os jogadores já fizeram sua pergunta.
+        # Nesse momento abre-se a decisão ao vivo: "Continuar" x "Votação".
+        turn_no = 0
         while True:
-            round_no += 1
-            self._play_round(ctx, round_no)
-            if round_no >= self.max_rounds:
-                self.broadcast("info", message="Limite de rodadas atingido: votação obrigatória.")
+            turn_no += 1
+            self._play_turn(ctx, turn_no)
+            if turn_no >= self.max_turns:
+                self.broadcast("info", message="Limite de turnos atingido: votação do impostor obrigatória.")
                 break
-            if round_no >= self.rounds_before_vote:
-                if self._ask_continue(ctx, round_no) == "vote":
+            if turn_no >= self.min_turns:
+                if self._ask_continue(ctx, turn_no) == "vote":
                     break
         return self._voting_phase(ctx)
 
@@ -498,7 +610,7 @@ class GameServer:
             results[player] = data
             pending.discard(player)
             if on_accept:
-                on_accept(len(results), total)
+                on_accept(player, data, len(results), total)
         return results
 
     @staticmethod
@@ -510,46 +622,48 @@ class GameServer:
         return None
 
     # ------------------------------------------------------------------
-    # Fase de rodadas
+    # Fase de turnos
     # ------------------------------------------------------------------
-    def _play_round(self, ctx, round_no):
-        """Uma rodada: CADA jogador faz UMA pergunta a TODOS os outros.
+    def _play_turn(self, ctx, turn_no):
+        """Um TURNO: TODOS os jogadores fazem uma pergunta, um de cada vez.
 
-        O servidor embaralha a ordem de quem pergunta. Em cada turno:
-          1. o perguntador envia UMA pergunta (send_question);
+        O servidor embaralha a ordem de quem pergunta. Para cada perguntador:
+          1. ele envia UMA pergunta (send_question);
           2. o servidor a retransmite a toda a sala (broadcast_question);
-          3. todos os demais respondem, UM DE CADA VEZ, na ordem circular que
-             vem depois do perguntador; cada resposta é retransmitida na hora
-             (broadcast_answer). Quem responde por último já viu as respostas
-             anteriores - é aí que o Impostor tenta se camuflar.
+          3. TODOS os demais respondem, UM DE CADA VEZ, numa ordem sorteada;
+             cada resposta é retransmitida na hora (broadcast_answer). Quem
+             responde por último já viu as anteriores - é aí que o Impostor
+             tenta se camuflar.
+        O turno só termina (turn_end) quando todos já perguntaram; então o
+        chamador abre a decisão "Continuar" x "Votação" (_ask_continue).
         """
         self._check(ctx)
         order = ctx.active()
         random.shuffle(order)
-        n = len(order)
-        self.broadcast("round_start", round=round_no, order=[p.name for p in order])
+        steps = len(order)
+        self.broadcast("turn_start", turn=turn_no, order=[p.name for p in order])
 
-        for i, asker in enumerate(order):
+        for step, asker in enumerate(order, 1):
             self._check(ctx)
             if not asker.connected:
-                self.broadcast("info", message="Turno de %s pulado (jogador ausente)." % asker.name)
+                self.broadcast("info", message="Pergunta de %s pulada (jogador ausente)." % asker.name)
                 continue
-            # Todos os outros respondem, na ordem circular após o perguntador.
-            responders = [order[(i + j) % n] for j in range(1, n)]
+            responders = [p for p in ctx.active() if p is not asker]
+            random.shuffle(responders)
 
             # --- 1) pergunta (do perguntador para TODOS) ---
             self._drain(ctx)
-            self.broadcast("turn_ask", round=round_no, turn=i + 1, turns=n,
+            self.broadcast("ask_prompt", turn=turn_no, step=step, steps=steps,
                            asker=asker.name, responders=[p.name for p in responders],
                            timeout=self.turn_timeout)
             got = self._collect(ctx, [asker], "send_question",
                                 self.turn_timeout, self._validate_text)
             if asker not in got:
-                self.broadcast("turn_timeout", player=asker.name, action="pergunta",
+                self.broadcast("action_timeout", player=asker.name, action="pergunta",
                                reason="timeout" if asker.connected else "disconnected")
                 continue
             question = got[asker]["text"]
-            self.broadcast("broadcast_question", round=round_no,
+            self.broadcast("broadcast_question", turn=turn_no, step=step,
                            asker=asker.name, text=question)
 
             # --- 2) respostas (uma por vez, em ordem definida pelo servidor) ---
@@ -559,27 +673,28 @@ class GameServer:
                     self.broadcast("info", message="%s está ausente e não responderá." % responder.name)
                     continue
                 self._drain(ctx)
-                self.broadcast("turn_answer", round=round_no, asker=asker.name,
+                self.broadcast("answer_prompt", turn=turn_no, asker=asker.name,
                                responder=responder.name, question=question,
                                position=pos, total=len(responders),
                                timeout=self.turn_timeout)
                 got = self._collect(ctx, [responder], "send_answer",
                                     self.turn_timeout, self._validate_text)
                 if responder not in got:
-                    self.broadcast("turn_timeout", player=responder.name, action="resposta",
+                    self.broadcast("action_timeout", player=responder.name, action="resposta",
                                    reason="timeout" if responder.connected else "disconnected")
                     continue
-                self.broadcast("broadcast_answer", round=round_no, asker=asker.name,
+                self.broadcast("broadcast_answer", turn=turn_no, asker=asker.name,
                                responder=responder.name, question=question,
                                text=got[responder]["text"])
-        self.broadcast("round_end", round=round_no)
+        self.broadcast("turn_end", turn=turn_no)
 
     # ------------------------------------------------------------------
-    # Decisão: votar ou mais uma rodada?
+    # Decisão ao fim de CADA turno: "Continuar" (outro turno) x "Votação"
     # ------------------------------------------------------------------
-    def _ask_continue(self, ctx, round_no):
+    def _ask_continue(self, ctx, turn_no):
         self._set_state(DECIDING)
         voters = ctx.active()
+        tally = {"vote": [], "continue": []}      # quem votou em quê (público)
 
         def validate(player, data):
             choice = str(data.get("choice", "")).strip().lower()
@@ -588,22 +703,36 @@ class GameServer:
             data["choice"] = choice
             return None
 
+        def on_vote(player, data, done, total):
+            """TEMPO REAL: a cada voto aceito, toda a sala vê quem votou em
+            Votação, quem votou em Continuar e quem ainda falta votar."""
+            tally[data["choice"]].append(player.name)
+            voted = set(tally["vote"]) | set(tally["continue"])
+            waiting = [p.name for p in voters if p.connected and p.name not in voted]
+            self.broadcast("continue_vote_cast", voter=player.name, choice=data["choice"],
+                           voters_vote=list(tally["vote"]),
+                           voters_continue=list(tally["continue"]),
+                           waiting=waiting, received=done, total=total)
+
         self._drain(ctx)
-        self.broadcast("ask_continue", round=round_no, options=["vote", "continue"],
-                       message="Desejam votar no impostor ou jogar mais uma rodada?",
+        self.broadcast("ask_continue", turn=turn_no, options=["vote", "continue"],
+                       message="Fim do turno %d: todos já fizeram sua pergunta. "
+                               "Desejam continuar (outro turno) ou ir para a Votação do impostor?" % turn_no,
                        timeout=self.vote_timeout)
-        answers = self._collect(ctx, voters, "send_continue_vote",
-                                self.vote_timeout, validate)
+        self._collect(ctx, voters, "send_continue_vote", self.vote_timeout, validate, on_vote)
         self._check(ctx)
 
-        n_vote = sum(1 for d in answers.values() if d["choice"] == "vote")
-        n_cont = len(answers) - n_vote
+        n_vote, n_cont = len(tally["vote"]), len(tally["continue"])
+        voted = set(tally["vote"]) | set(tally["continue"])
+        abstained = [p.name for p in voters if p.name not in voted]
         total = len(ctx.active())
-        # Maioria ABSOLUTA dos jogadores presentes é exigida para votar.
-        # Empate ou omissão => jogam mais uma rodada.
+        # Maioria ABSOLUTA dos jogadores presentes é exigida para ir à Votação.
+        # Empate ou omissão => jogam outro turno.
         decision = "vote" if n_vote > total / 2 else "continue"
         self.broadcast("continue_result", votes_vote=n_vote, votes_continue=n_cont,
-                       abstentions=total - len(answers), decision=decision)
+                       abstentions=len(abstained), voters_vote=tally["vote"],
+                       voters_continue=tally["continue"], abstained=abstained,
+                       decision=decision)
         if decision == "continue":
             self._set_state(IN_GAME)
         return decision
@@ -625,7 +754,7 @@ class GameServer:
             data["_target"] = target
             return None
 
-        def progress(done, total):          # não revela em quem cada um votou
+        def progress(player, data, done, total):   # não revela em quem cada um votou
             self.broadcast("vote_progress", received=done, total=total)
 
         self._drain(ctx)
@@ -687,10 +816,10 @@ def main():
     ap = argparse.ArgumentParser(description="Servidor do jogo IMPOSTOR (TCP)")
     ap.add_argument("--host", default="0.0.0.0", help="interface de escuta (padrão 0.0.0.0)")
     ap.add_argument("--port", type=int, default=5000, help="porta TCP (padrão 5000)")
-    ap.add_argument("--rounds", type=int, default=3,
-                    help="rodadas jogadas antes da 1ª pergunta 'votar ou continuar?' (padrão 3)")
-    ap.add_argument("--max-rounds", type=int, default=10,
-                    help="limite de rodadas; ao atingi-lo a votação é obrigatória (padrão 10)")
+    ap.add_argument("--min-turns", type=int, default=1,
+                    help="turnos completos antes da 1ª decisão 'Continuar x Votação' (padrão 1 = após todo turno)")
+    ap.add_argument("--max-turns", type=int, default=5,
+                    help="limite de turnos; ao atingi-lo a votação do impostor é obrigatória (padrão 5)")
     ap.add_argument("--turn-timeout", type=int, default=60,
                     help="segundos para perguntar/responder/palpitar (padrão 60)")
     ap.add_argument("--vote-timeout", type=int, default=45,
@@ -700,7 +829,7 @@ def main():
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s [%(levelname)s] %(message)s",
                         datefmt="%H:%M:%S")
-    GameServer(args.host, args.port, args.rounds, args.max_rounds,
+    GameServer(args.host, args.port, args.min_turns, args.max_turns,
                args.turn_timeout, args.vote_timeout).serve_forever()
 
 
