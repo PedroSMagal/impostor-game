@@ -28,8 +28,8 @@
 **Impostor** é um jogo de dedução social para **3 a 5 jogadores**, inspirado em jogos como *Among Us* e *Spyfall*.
 Todos recebem um **tema** (ex.: `COMIDA`). Todos os jogadores **normais** também recebem a **palavra secreta**
 (ex.: `FEIJÃO`), mas **um jogador sorteado é o Impostor** e **não sabe a palavra** — só conhece o tema.
-Os jogadores se interrogam por turnos, o Impostor tenta se disfarçar e, no final, todos votam em quem acham
-que é o Impostor.
+Em cada turno, **um jogador faz uma pergunta para TODOS os outros**, e cada um responde. O Impostor tenta se
+disfarçar sem saber a palavra e, no final, todos votam em quem acham que é o Impostor.
 
 ### 1.2 Regras implementadas
 
@@ -39,7 +39,7 @@ que é o Impostor.
 | 2 | A partida só começa quando há **≥ 3 jogadores e todos** enviaram `player_ready`. | `server.py › _maybe_start` |
 | 3 | O servidor **sorteia** um tema, uma palavra e **1 Impostor**. | `server.py › _run_game` |
 | 4 | Jogadores normais recebem **tema + palavra**; o Impostor recebe **só o tema** e o aviso de que é o Impostor. | `role_assign` (enviado individualmente) |
-| 5 | **Rodadas por turnos controlados pelo servidor:** em cada turno, um jogador pergunta e **outro** responde; o servidor faz **broadcast** da pergunta e da resposta para toda a sala. | `server.py › _play_round` |
+| 5 | **Rodadas por turnos controlados pelo servidor:** em cada turno, **um jogador faz UMA pergunta para TODOS os outros**; o servidor faz **broadcast** da pergunta e, em seguida, chama **cada um dos demais, um por vez**, para responder, retransmitindo cada resposta à sala. Em uma rodada, **cada jogador pergunta uma vez**. | `server.py › _play_round` |
 | 6 | Após **3 rodadas** (configurável: `--rounds`), o servidor pergunta: *"Desejam votar no impostor ou jogar mais uma rodada?"*. Se a **maioria** escolher votar, abre a votação. | `server.py › _ask_continue` |
 | 7 | **Votação:** cada jogador envia seu voto ao servidor. | `server.py › _voting_phase` |
 | 8 | Mais votado **não** é o Impostor → **Impostor vence**. | `_voting_phase` |
@@ -52,6 +52,8 @@ que é o Impostor.
   ninguém é eliminado → o **Impostor vence**.
 * **"Maioria"** para votar significa **mais da metade dos jogadores presentes**. **Empate ou omissão =
   mais uma rodada.** Para o jogo não ser infinito, ao atingir `--max-rounds` (padrão 10) a votação é obrigatória.
+* **Respostas em sequência e públicas:** cada resposta é retransmitida na hora, então quem responde depois já viu as
+  respostas anteriores (é aí que o Impostor tenta se camuflar). A ordem de quem pergunta é sorteada a cada rodada.
 * **Ninguém vota em si mesmo** (o servidor rejeita).
 * O palpite do Impostor ignora **acentos, maiúsculas e espaços extras** (`feijao` = `FEIJÃO`).
 * **Tempo limite:** se um jogador não agir no prazo (padrão 60 s para perguntar/responder, 45 s para votar),
@@ -68,23 +70,35 @@ que é o Impostor.
    └───────────────────────────────── nova partida ◄───────────────────────────────────────────────────────────────────────────┘
 ```
 
-**Como os turnos funcionam.** A cada rodada o servidor embaralha a ordem dos jogadores. Cada jogador pergunta
-**uma vez** e o servidor escolhe quem responde: o jogador `k` posições à frente na ordem circular, com
-`k = 1 + (rodada − 1) mod (N − 1)`. Assim ninguém pergunta a si mesmo e, a cada rodada, os pares
-"quem pergunta → quem responde" mudam.
+**Como os turnos funcionam.** A cada rodada o servidor **embaralha a ordem de quem pergunta**. Em cada turno:
 
-### 1.4 Exemplo de partida (visão de um jogador normal)
+1. o servidor convida o **perguntador** (`turn_ask`) e ele envia **uma pergunta** (`send_question`);
+2. o servidor retransmite a pergunta a **toda a sala** (`broadcast_question`);
+3. **todos os outros jogadores** respondem, **um de cada vez**, na ordem circular que vem depois do perguntador
+   (`turn_answer` → `send_answer` → `broadcast_answer`, repetido para cada um).
+
+Numa rodada com **N** jogadores há **N perguntas** e **N × (N − 1) respostas**. Com 4 jogadores, por exemplo, uma
+rodada tem 4 perguntas e 12 respostas. Para partidas mais rápidas, use `--rounds 1`.
+
+### 1.4 Exemplo de partida (visão de um jogador normal, sala com 3 jogadores)
 
 ```
 >>> Você é um JOGADOR NORMAL.
     Tema: COMIDA   |   Palavra secreta: FEIJÃO
 
 ----- RODADA 1  (ordem: Caio > Ana > Bia) -----
-[turno 1/3] Vez de Caio perguntar a Ana...
-  [PERGUNTA] Caio -> Ana: Você come isso no almoço?
-  [RESPOSTA] Ana: Quase todo dia!
 
-*** SUA VEZ! Pergunte algo a Bia sobre a palavra. (turno 2/3)
+[turno 1/3] Vez de Caio fazer uma pergunta para todos...
+  [PERGUNTA] Caio (para todos): Você come isso no almoço?
+
+*** Sua vez de RESPONDER (1/2) à pergunta de Caio: "Você come isso no almoço?"
+  -> Digite sua RESPOSTA: Quase todo dia!
+  [RESPOSTA] Ana: Quase todo dia!
+  Aguardando Bia responder (2/2)...
+  [RESPOSTA] Bia: Depende do dia.
+
+*** SUA VEZ! Faça UMA pergunta sobre a palavra para TODOS os outros. (turno 2/3)
+    Quem vai responder, em ordem: Bia, Caio
   -> Digite sua PERGUNTA: _
 ```
 
@@ -126,7 +140,7 @@ python3 server.py [--host 0.0.0.0] [--port 5000] [--rounds 3] [--max-rounds 10]
 |-----------|--------|-------------|
 | `--host` | `0.0.0.0` | Interface de escuta (`0.0.0.0` = todas). |
 | `--port` | `5000` | Porta TCP. |
-| `--rounds` | `3` | Rodadas jogadas antes da 1ª pergunta "votar ou continuar?" (**número configurável**). |
+| `--rounds` | `3` | Rodadas jogadas antes da 1ª pergunta "votar ou continuar?" (**número configurável**). Uma rodada = cada jogador pergunta uma vez a todos os outros. |
 | `--max-rounds` | `10` | Ao atingir este limite, a votação é obrigatória. |
 | `--turn-timeout` | `60` | Segundos para perguntar, responder ou palpitar. |
 | `--vote-timeout` | `45` | Segundos para votar / decidir "votar ou continuar". |
@@ -140,15 +154,6 @@ python3 client.py --host <IP_DO_SERVIDOR> --port 5000 --name <SEU_NOME>
 * **Mesma máquina:** use `--host 127.0.0.1` e abra um terminal por jogador.
 * **Rede local:** descubra o IP do servidor (`ip addr` / `ipconfig`) e use-o em `--host`.
 * O nome deve ter de 1 a 15 caracteres (letras, números, `_` ou `-`) e ser único na sala.
-
-### 2.3 Demonstração sem várias pessoas (bots)
-
-```bash
-python3 server.py --port 5000 --rounds 1 &
-python3 test_bots.py --port 5000 --players 4 --games 3            # partidas completas automáticas
-python3 test_bots.py --port 5000 --players 4 --catch              # impostor descoberto e erra → Impostor perde
-python3 test_bots.py --port 5000 --players 4 --catch --guess-right  # impostor descoberto e acerta → EMPATE
-```
 
 ---
 
@@ -247,7 +252,7 @@ encerrada para proteger o servidor).
 {"type":"player_join","data":{"name":"Ana","protocol":"IMPOSTOR/1.0"}}
 {"type":"role_assign","data":{"role":"CIVILIAN","theme":"COMIDA","word":"FEIJÃO"}}
 {"type":"role_assign","data":{"role":"IMPOSTOR","theme":"COMIDA","word":null}}
-{"type":"turn_ask","data":{"round":1,"turn":1,"turns":3,"asker":"Caio","target":"Ana","timeout":60}}
+{"type":"turn_ask","data":{"round":1,"turn":1,"turns":3,"asker":"Caio","responders":["Ana","Bia"],"timeout":60}}
 {"type":"send_question","data":{"text":"Você come isso no almoço?"}}
 {"type":"send_vote","data":{"target":"Caio"}}
 {"type":"end_game","data":{"result":"DRAW","message":"...","impostor":"Caio","theme":"COMIDA","word":"FEIJÃO","guess":"feijao"}}
@@ -273,7 +278,7 @@ padrão. O JSON escapa `\n` dentro de strings, portanto **uma quebra de linha re
 | Estado | Descrição | Eventos aceitos dos clientes |
 |--------|-----------|------------------------------|
 | `WAIT_PLAYERS` | Lobby: aceita conexões (≤ 5) e aguarda `player_ready` de todos (≥ 3). | `player_join`, `player_ready`, `ping`, `player_quit` |
-| `IN_GAME` | Fase de rodadas: perguntas e respostas por turnos. | `send_question` (só do `asker`), `send_answer` (só do `responder`), `ping`, `player_quit` |
+| `IN_GAME` | Fase de rodadas: perguntas e respostas por turnos. | `send_question` (só do `asker`), `send_answer` (só do jogador cuja vez de responder foi anunciada), `ping`, `player_quit` |
 | `DECIDING` | "Votar no impostor ou jogar mais uma rodada?" | `send_continue_vote` (todos), `ping`, `player_quit` |
 | `VOTING` | Cada jogador vota em quem acredita ser o Impostor. | `send_vote` (todos), `ping`, `player_quit` |
 | `GUESSING` | Impostor descoberto tenta adivinhar a palavra (chance de empate). | `send_guess` (só do Impostor), `ping`, `player_quit` |
@@ -311,7 +316,7 @@ define o que o teclado do usuário significa naquele momento.
 |-------------------|-------------|----------------------------------------|
 | `CONNECTING` | Socket aberto, `player_join` enviado, aguardando `welcome`. | — |
 | `WAIT_PLAYERS` | No lobby. | `pronto` → `player_ready` |
-| `IN_GAME` + `pending=ask` | É a vez de **perguntar**. | texto → `send_question` |
+| `IN_GAME` + `pending=ask` | É a vez de **perguntar a todos**. | texto → `send_question` |
 | `IN_GAME` + `pending=answer` | É a vez de **responder**. | texto → `send_answer` |
 | `IN_GAME` + `pending=None` | Aguardando os outros jogadores. | ignorada (aviso "aguarde") |
 | `DECIDING` + `pending=continue` | Decisão coletiva. | `v` / `c` → `send_continue_vote` |
@@ -332,8 +337,8 @@ por exemplo, estourou o tempo), e é **restaurada** quando o servidor responde `
 |--------|--------|---------------|-----------|
 | `player_join` | `{name, protocol}` | *handshake* (1ª mensagem) | Pede entrada na sala. `protocol` deve ser `"IMPOSTOR/1.0"`. |
 | `player_ready` | `{}` | `WAIT_PLAYERS` | Marca o jogador como pronto. |
-| `send_question` | `{text}` | `IN_GAME` (turno do `asker`) | Envia a pergunta do turno. |
-| `send_answer` | `{text}` | `IN_GAME` (turno do `responder`) | Envia a resposta ao turno. |
+| `send_question` | `{text}` | `IN_GAME` (turno do `asker`) | Envia a pergunta do turno, dirigida a **todos** os outros jogadores. |
+| `send_answer` | `{text}` | `IN_GAME` (vez do `responder`) | Envia a resposta à pergunta atual. Cada jogador responde uma vez por pergunta. |
 | `send_continue_vote` | `{choice}` | `DECIDING` | `choice` ∈ {`"vote"`, `"continue"`}. |
 | `send_vote` | `{target}` | `VOTING` | Nome do jogador em quem vota (≠ si mesmo). |
 | `send_guess` | `{word}` | `GUESSING` (só Impostor) | Palpite da palavra secreta. |
@@ -351,10 +356,10 @@ por exemplo, estourou o tempo), e é **restaurada** quando o servidor responde `
 | `start_game` | todos | `{players, theme, rounds_before_vote, max_rounds, turn_timeout}` | A partida começou; **tema** é público. |
 | `role_assign` | **individual** | `{role, theme, word}` | `role` ∈ {`CIVILIAN`,`IMPOSTOR`}; `word` é `null` para o Impostor. |
 | `round_start` | todos | `{round, order}` | Início de rodada e ordem sorteada. |
-| `turn_ask` | todos | `{round, turn, turns, asker, target, timeout}` | **Convite** para `asker` perguntar a `target`. |
-| `broadcast_question` | todos | `{round, asker, target, text}` | Retransmissão da pergunta. |
-| `turn_answer` | todos | `{round, asker, responder, question, timeout}` | **Convite** para `responder` responder. |
-| `broadcast_answer` | todos | `{round, asker, responder, question, text}` | Retransmissão da resposta. |
+| `turn_ask` | todos | `{round, turn, turns, asker, responders, timeout}` | **Convite** para `asker` fazer uma pergunta a **todos**; `responders` é a ordem em que os demais responderão. |
+| `broadcast_question` | todos | `{round, asker, text}` | Retransmissão da pergunta para toda a sala. |
+| `turn_answer` | todos | `{round, asker, responder, question, position, total, timeout}` | **Convite** para `responder` responder (é o `position`-ésimo de `total`). Enviado uma vez para cada respondente. |
+| `broadcast_answer` | todos | `{round, asker, responder, question, text}` | Retransmissão da resposta, na hora, para toda a sala. |
 | `turn_timeout` | todos | `{player, action, reason}` | Jogador não agiu (tempo/queda); turno pulado. |
 | `round_end` | todos | `{round}` | Fim da rodada. |
 | `ask_continue` | todos | `{round, options, message, timeout}` | "Desejam votar no impostor ou jogar mais uma rodada?" |
@@ -410,15 +415,18 @@ Legenda: `C1..C3` = clientes (C2 será o Impostor neste exemplo), `S` = servidor
  │ ◄── role_assign {CIVILIAN, COMIDA, "FEIJÃO"} ───────── C3 (individual)
  │ ◄── round_start {round:1, order:[C3,C1,C2]} ─────────── ►►
 
- ── Turno 1: C3 pergunta a C1 ──
- │ ◄── turn_ask {asker:C3, target:C1} ──────────────────── ►►
+ ── Turno 1: C3 pergunta a TODOS (respondem C1 e depois C2) ──
+ │ ◄── turn_ask {asker:C3, responders:[C1,C2]} ─────────── ►►
  │                                    C3 ── send_question {text} ──► S
  │      (se C1 ou C2 enviassem algo agora: S ► error NOT_YOUR_TURN)
- │ ◄── broadcast_question {C3 → C1, text} ──────────────── ►►
- │ ◄── turn_answer {responder:C1, question} ────────────── ►►
+ │ ◄── broadcast_question {C3, text} ───────────────────── ►►
+ │ ◄── turn_answer {responder:C1, position:1, total:2} ─── ►►
  │ C1 ── send_answer {text} ───────────────────────────────► S
  │ ◄── broadcast_answer {C1, text} ─────────────────────── ►►
- ── Turnos 2..N análogos ──
+ │ ◄── turn_answer {responder:C2, position:2, total:2} ─── ►►
+ │ C2 ── send_answer {text} ───────────────────────────────► S
+ │ ◄── broadcast_answer {C2, text} ─────────────────────── ►►    (C2 já viu a resposta de C1)
+ ── Turnos 2..N análogos (em cada rodada, cada jogador pergunta uma vez) ──
  │ ◄── round_end {round:1} ─────────────────────────────── ►►
 ```
 
@@ -497,24 +505,29 @@ Legenda: `C1..C3` = clientes (C2 será o Impostor neste exemplo), `S` = servidor
 
 ## 6. Testes realizados
 
-Executados em Python 3.12 (Linux), com servidor e clientes via `localhost`:
+Executados em Python 3.12 (Linux), com servidor e clientes via `localhost`. Parte dos testes usou o `client.py` real
+controlado por um script; outra parte usou clientes descartáveis que falam o protocolo diretamente por *sockets*
+(scripts de teste, não incluídos na entrega).
 
 | Teste | Resultado |
 |-------|-----------|
-| 8 partidas consecutivas com 3 bots (volta ao lobby e revanche automática) | ✅ sem erros no log do servidor |
-| 4 e 5 bots, rodada extra ("continue" antes de "vote") | ✅ |
-| Impostor descoberto + palpite **errado** (`--catch`) | ✅ `IMPOSTOR_LOSES` |
-| Impostor descoberto + palpite **certo** (`--catch --guess-right`) | ✅ `DRAW` |
-| Impostor não descoberto / empate na votação | ✅ `IMPOSTOR_WINS` |
-| 3 clientes **reais** (`client.py`) controlados por script, partida completa | ✅ |
-| 6ª conexão recusada (`Sala cheia (5/5)`) | ✅ `join_rejected` |
-| Versão de protocolo incompatível / 1ª mensagem inválida | ✅ `join_rejected` |
-| Mensagem JSON inválida após entrar / evento fora do estado | ✅ `error BAD_MESSAGE` / `INVALID_STATE`, conexão mantida |
-| Conexão durante partida em andamento | ✅ `join_rejected` |
+| 4 instâncias reais do `client.py`, partida completa | ✅ 4 perguntas e 12 respostas na rodada (cada pergunta respondida pelos 3 outros, um por vez) |
+| Várias partidas seguidas, votos aleatórios (volta ao lobby e revanche) | ✅ `IMPOSTOR_WINS` e `IMPOSTOR_LOSES` observados |
+| Impostor descoberto + palpite **errado** | ✅ `IMPOSTOR_LOSES` |
+| Impostor descoberto + palpite **certo** (5 jogadores) | ✅ `DRAW` |
+| Rodada extra ("continuar" antes de "votar") | ✅ |
+| Jogador que **não responde** (prazo de 2 s) | ✅ `turn_timeout`, o turno é pulado e a partida termina normalmente |
+| **Queda de jogador comum** na hora de responder | ✅ `turn_timeout (disconnected)`, partida continua com os demais |
+| **Queda do Impostor** | ✅ `end_game` com `ABORTED` |
+| 6º jogador recusado | ✅ `join_rejected` ("Sala cheia (5/5)") |
+| Nome duplicado, nome inválido, versão de protocolo incompatível, 1ª mensagem inválida | ✅ `join_rejected` |
+| JSON inválido após entrar / evento fora do estado | ✅ `error BAD_MESSAGE` / `INVALID_STATE`, conexão mantida |
 
-Para reproduzir: veja a seção 2.3 (`test_bots.py`).
+**Roteiro manual** para reproduzir (3 a 5 terminais): suba o servidor com `python3 server.py --rounds 1`, entre com
+um `client.py` por terminal, digite `pronto` em todos e acompanhe o fluxo. Para testar o *timeout*, use
+`--turn-timeout 5` e deixe um jogador sem responder; para testar a queda, feche o terminal de um jogador no meio da vez.
 
-Exemplo ilustrativo de sessão manual com `netcat` (o protocolo é textual, legível e independente do cliente; os mesmos eventos foram enviados por *sockets* crus em Python durante os testes):
+Exemplo ilustrativo de sessão manual com `netcat` (o protocolo é textual, legível e independente do cliente):
 
 ```bash
 $ nc 127.0.0.1 5000
@@ -531,14 +544,14 @@ $ nc 127.0.0.1 5000
   cliente, e códigos de erro padronizados.
 * **Servidor autoritativo:** o cliente não decide nada; mesmo um cliente modificado/malicioso não consegue agir fora de
   vez (`NOT_YOUR_TURN`), votar em si mesmo ou ver a palavra do Impostor (o segredo nem é enviado).
-* **Rotação de alvos por rodada** (`k = 1 + (rodada − 1) mod (N − 1)`): perguntas mais variadas que uma ordem fixa.
+* **Pergunta para todos, respostas em sequência e públicas:** o servidor sorteia a ordem de quem pergunta a cada rodada e
+  conduz cada respondente, um por vez, retransmitindo cada resposta na hora.
 * **Votação secreta com progresso público** (`vote_progress`) e **revelação simultânea** (`vote_result`).
 * **Robustez:** timeouts em todas as esperas, tratamento de queda de jogador, `ABORTED` seguro, limite de tamanho de mensagem,
   validação de nome/entradas, descarte de mensagens atrasadas (`_drain`).
 * **Revanche sem reconectar:** a sala volta ao lobby ao final da partida.
 * **Observabilidade:** *log* com horário no servidor; `/ping` no cliente mede o RTT real da conexão TCP.
 * **Banco de temas** inclui um tema de **Redes** (`SOCKET`, `FIREWALL`, `PROTOCOLO`, …) alinhado à disciplina.
-* **Ferramenta de teste (`test_bots.py`)** que joga partidas completas e cobre todos os desfechos.
 * **Somente biblioteca padrão**, sem dependências externas.
 
 ---
@@ -562,6 +575,5 @@ $ nc 127.0.0.1 5000
 impostor/
 ├── server.py      # Servidor: sockets TCP, 1 thread por cliente, árbitro da partida, máquina de estados
 ├── client.py      # Cliente de terminal: thread de recepção + entrada do usuário
-├── test_bots.py   # (extra) Bots que jogam partidas completas via protocolo para testes/demonstração
 └── readme.md      # Este documento
 ```

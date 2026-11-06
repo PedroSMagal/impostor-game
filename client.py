@@ -200,22 +200,24 @@ class ImpostorClient:
 
     def on_turn_ask(self, d):
         if d["asker"] == self.name:
-            self.out("\n*** SUA VEZ! Pergunte algo a %s sobre a palavra. (turno %d/%d)"
-                     % (d["target"], d["turn"], d["turns"]))
+            self.out("\n*** SUA VEZ! Faça UMA pergunta sobre a palavra para TODOS os outros. (turno %d/%d)"
+                     % (d["turn"], d["turns"]))
+            self.out("    Quem vai responder, em ordem: %s" % ", ".join(d["responders"]))
             self.set_pending("ask")
         else:
-            self.out("\n[turno %d/%d] Vez de %s perguntar a %s..."
-                     % (d["turn"], d["turns"], d["asker"], d["target"]))
+            self.out("\n[turno %d/%d] Vez de %s fazer uma pergunta para todos..."
+                     % (d["turn"], d["turns"], d["asker"]))
 
     def on_broadcast_question(self, d):
-        self.out("  [PERGUNTA] %s -> %s: %s" % (d["asker"], d["target"], d["text"]))
+        self.out("  [PERGUNTA] %s (para todos): %s" % (d["asker"], d["text"]))
 
     def on_turn_answer(self, d):
         if d["responder"] == self.name:
-            self.out("\n*** Você foi interrogado por %s: \"%s\"" % (d["asker"], d["question"]))
+            self.out("\n*** Sua vez de RESPONDER (%d/%d) à pergunta de %s: \"%s\""
+                     % (d["position"], d["total"], d["asker"], d["question"]))
             self.set_pending("answer")
         else:
-            self.out("  Aguardando %s responder..." % d["responder"])
+            self.out("  Aguardando %s responder (%d/%d)..." % (d["responder"], d["position"], d["total"]))
 
     def on_broadcast_answer(self, d):
         self.out("  [RESPOSTA] %s: %s" % (d["responder"], d["text"]))

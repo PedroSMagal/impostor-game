@@ -62,130 +62,18 @@ END_GAME = "END_GAME"           # resultado final
 
 # Temas e palavras secretas (o servidor sorteia um tema e uma palavra)
 THEMES = {
-    "COMIDAS": [
-        "HAMBÚRGUER DE SIRI", "LASANHA", "CERVEJA AMANTEIGADA",
-        "ESPINAFRE", "COGUMELO", "BISCOITO SCOOBY",
-        "ROSQUINHA", "MACARRÃO COM SALSICHA", "SEMENTES DOS DEUSES",
-        "TORTA DE MAÇÃ", "POÇÃO POLISSUCO", "LEMBAS",
-        "SANDUÍCHE DE PRESUNTO", "CHURROS", "HAMBÚRGUER KRUSTY",
-        "AMBROSIA DOS DEUSES", "RAMEN", "FRUTA DO DIABO",
-        "SLURM", "NUKA-COLA", "MAÇÃ DOURADA",
-        "WAFFLES", "QUEIJO SUÍÇO", "SORVETE NAPOLITANO",
-        "HIDROMEL", "RAÇÃO HUMANA", "VATAPÁ RADIOATIVO",
-        "PÃO DE QUEIJO MÁGICO", "COXINHA DE RODOVIÁRIA", "ACARAJÉ COM PIMENTA BRABA"
-    ],
-    
-    "ANIMAIS E PETS": [
-        "SCOOBY-DOO", "PIKACHU", "GARFIELD", "CORAGEM", 
-        "PERRY O ORNITORRINCO", "EDWIGES", "YOSHI", "PICA-PAU",
-        "SONIC", "BURRO", "BANGUELA", "PUMBA",
-        "TIMÃO", "APPA", "MOMO", "RAPOSA DE NOVE CAUDAS",
-        "GATO DE BOTAS", "TOM", "JERRY", "PERNALONGA",
-        "PATOLINO", "TOTORO", "REX", "SNOOPY",
-        "BRIAN GRIFFIN", "BOJACK HORSEMAN", "DINO", 
-        "CACHORRO", "VIRA-LATA CARAMELO", "GALO CEGO"
-    ],
-    
-    "PROFISSÕES": [
-        "CAÇADOR DE RECOMPENSAS", "PROFESSOR DE DEFESA CONTRA AS TREVAS", "ENCANADOR",
-        "ENTREGADOR DE PIZZA", "MESTRE POKÉMON", "MESTRE JEDI", "CAÇA-FANTASMAS",
-        "FEITICEIRO", "ALQUIMISTA FEDERAL", "DOMINADOR DE ELEMENTOS",
-        "FABRICANTE DE CRISTAL", "PILOTO DE ROBO GIGANTE", "NINJA",
-        "PRESIDENTE", "GUARDA", "FUNCIONÁRIO DE ESCRITÓRIO",
-        "SENHOR DO TEMPO", "XERIFE", "CAÇADOR DE MONSTROS",
-        "AGENTE SECRETO", "SEMIDEUS", "OPERADOR",
-        "PIRATA", "GUARDIÃO DA GALÁXIA", "VINGADOR",
-        "MOTORISTA DE FUGA", "DETETIVE SOBRENATURAL", "AGIOTA",
-        "TESTADOR DE COLCHÕES", "JUIZ DE RINHA DE GALO"
-    ],
-    
-    "LUGARES": [
-        "FENDA DO BIQUÍNI", "ASILO ARKHAM", "VILA",
-        "HOGWARTS", "ACAMPAMENTO MEIO-SANGUE", "ESTRELA DA MORTE", "BAIRRO DO LIMOEIRO",
-        "MORDOR", "WAKANDA", "CENTRAL PERK",
-        "TAVERNA", "ESCRITÓRIO", "VILA DA FOLHA",
-        "NAÇÃO DO FOGO", "ILHA DESERTA", "MUNDO INVERTIDO",
-        "BATECAVERNA", "FORTALEZA DA SOLIDÃO", "TARDIS",
-        "PORTO REAL", "SPRINGFIELD", "SIRI CASCUDO",
-        "CONDADO", "PLANETA NAMEKUSEI", "ASGARD",
-        "MONTE OLIMPO", "ESCOLA DE MAGIA", "CIDADE DE JACKSON",
-        "SEATTLE PÓS-APOCALÍPTICA", "SALA PRECISA"
-    ],
-    
-    "OBJETOS": [
-        "O UM ANEL", "VARINHA DAS VARINHAS", "CADERNO DA MORTE",
-        "ESCUDO", "MARTELO", "POKÉBOLA",
-        "CANIVETE", "RELÓGIO QUEBRADO", "CHAPÉU SELETOR",
-        "ESPADA DE DIAMANTE", "CAPA DE INVISIBILIDADE", "PÍLULA VERMELHA",
-        "COROA", "LÂMPADA MÁGICA", "ESFERAS DO DRAGÃO",
-        "TAPETE MÁGICO", "ARMADURA", "LAÇO DA VERDADE",
-        "MÁSCARA", "TRIDENTE", "OMNITRIX",
-        "CUBO MÁGICO", "ESPELHO MÁGICO", "BATARANG",
-        "SABRE DE LUZ", "CADERNO DE RECEITAS", "DADO DE VINTE LADOS",
-        "VIRA-TEMPO", "MANOPLA DO INFINITO", "BOMBA DE ABÓBORA"
-    ],
-    
-    "VEÍCULOS": [
-        "BATMÓVEL", "DELOREAN", "MILLENNIUM FALCON", 
-        "VASSOURA VOADORA", "MÁQUINA DE MISTÉRIO", "ECTO-UM",
-        "CHEVROLET IMPALA", "YAMAHA FZ QUINZE AZUL", "CHEVROLET CRUZE",
-        "X-WING", "TIE FIGHTER", "PÉROLA NEGRA",
-        "CARRO DE PEDRA", "NAVE ESPACIAL", "EXPRESSO",
-        "ÔNIBUS ANDANTE", "CARRUAGEM", "CARRO VERDE",
-        "CAMINHÃO", "HOVERBOARD", "ENTERPRISE",
-        "CAVALO", "PIPA PLANADORA", "TRENÓ",
-        "KOMBI", "UNO COM ESCADA NO TETO", "CELTA REBAIXADO",
-        "CARROÇA", "MOTO EM CHAMAS", "FOGUETE"
-    ],
-
-    "VILÕES E ANTAGONISTAS": [
-        "DARTH VADER", "VOLDEMORT", "CORINGA", "THANOS", "SAURON",
-        "FREEZA", "BOWSER", "DOUTOR EGGMAN", 
-        "SUKUNA", "PLANKTON", "MACACO LOUCO",
-        "EQUIPE ROCKET", "SCAR", "SENHOR BURNS", "DUENDE VERDE",
-        "MAGNETO", "LOKI", "REI DA NOITE", "AGENTE SMITH",
-        "EXTERMINADOR", "FREDDY KRUEGER", "JASON VOORHEES",
-        "PENNYWISE", "VILGAX", "CELL",
-        "OROCHIMARU", "LÍDER DOS VAGALUMES", "KRONOS",
-        "DARTH MAUL", "MADRASTA MÁ"
-    ],
-
-    "SUPERPODERES": [
-        "VOAR", "DOMINAR A ÁGUA", "DOMINAR O FOGO", 
-        "SOLTAR TEIA", "VISÃO DE CALOR", "FATOR DE CURA",
-        "SUPER VELOCIDADE", "FICAR INVISÍVEL", "LER MENTES",
-        "TELETRANSPORTE", "SUPER FORÇA", "MAGIA",
-        "CONTROLE DO MAGNETISMO", "CLONAGEM DAS SOMBRAS", "RASENGAN",
-        "EXPANSÃO DE DOMÍNIO", "SENTIDO ARANHA", "BAFO CONGELANTE",
-        "ELASTICIDADE", "FORMA TITÃ", "INVOCAR PATRONO",
-        "MUDAR DE FORMA", "RESPIRAR EMBAIXO D'ÁGUA", "CONTROLE DO CLIMA",
-        "ENCOLHER", "FICAR GIGANTE", "PARAR O TEMPO",
-        "HIPNOSE", "FALAR COM MÁQUINAS", "SER BILIONÁRIO"
-    ],
-
-    "MONSTROS E CRIATURAS": [
-        "ESTALADOR", "DEMOGORGON", "XENOMORFO",
-        "PREDADOR", "GODZILLA", "KING KONG", "VAMPIRO",
-        "LOBISOMEM", "MÚMIA", "MONSTRO DE FRANKENSTEIN", "CENTAURO",
-        "MINOTAURO", "CICLOPE", "DRAGÃO", "BASILISCO",
-        "DEMENTADOR", "CHUPACABRA", "MONSTRO DO LAGO NESS", "PÉ GRANDE",
-        "GREMLIN", "SLENDERMAN", "SIREN HEAD", "TIRANOSSAURO REX",
-        "TITÃ COLOSSAL", "CÉRBERO", "KRAKEN",
-        "BALROG", "SEREIA MALIGNA", "ZUMBI", "GÁRGULA"
-    ],
-
-    "MEMES DA INTERNET": [
-        "GRÁVIDA DE TAUBATÉ", "LUVA DE PEDREIRO", "CANETA AZUL", 
-        "NAZARÉ CONFUSA", "ET BILU", "RONALDINHO GAÚCHO",
-        "BAMBU", "MENINA FANTASMA DO ELEVADOR", "DOLLYNHO",
-        "ZÉ GOTINHA BOMBADO", "CAZE REAGINDO", "JOELMA BATENDO CABELO",
-        "FAUSTÃO DIZENDO ERROU", "VAMPETAÇO", "INÊS BRASIL",
-        "CHOQUE DE CULTURA", "GLÓRIA PIRES NO OSCAR", "CAPIVARA",
-        "E O PIX NADA AINDA", "FADA DO DENTE CALOTEIRA", "GRETCHEN",
-        "VELHO DA LANCHA", "SÓSIA DO NEYMAR", "CACHORRO CARAMELO SORRINDO",
-        "BOM DIA DE GRUPO DE FAMÍLIA", "ÁUDIO DO GEMIDÃO", "MENINO DO ACRE",
-        "REI DO CAMAROTE", "MEME DO CAIXÃO", "CABELEIREIRA LEILA"
-    ]
+    "COMIDA": ["FEIJÃO", "PIZZA", "LASANHA", "SUSHI", "CHURRASCO",
+               "BRIGADEIRO", "TAPIOCA", "ACARAJÉ", "MOQUECA"],
+    "ANIMAIS": ["CACHORRO", "ELEFANTE", "GOLFINHO", "PAPAGAIO",
+                "TARTARUGA", "CAMELO", "PINGUIM", "JACARÉ"],
+    "PROFISSÕES": ["MÉDICO", "PROFESSOR", "BOMBEIRO", "PILOTO",
+                   "PADEIRO", "ENGENHEIRO", "ADVOGADO", "DENTISTA"],
+    "LUGARES": ["PRAIA", "AEROPORTO", "BIBLIOTECA", "HOSPITAL",
+                "ESTÁDIO", "SHOPPING", "RODOVIÁRIA", "CINEMA"],
+    "OBJETOS": ["GELADEIRA", "VIOLÃO", "BICICLETA", "ÓCULOS",
+                "GUARDA-CHUVA", "TELEFONE", "RELÓGIO", "TESOURA"],
+    "REDES": ["ROTEADOR", "SOCKET", "FIREWALL", "SERVIDOR",
+              "PROTOCOLO", "SWITCH", "PACOTE", "GATEWAY"],
 }
 
 log = logging.getLogger("impostor.server")
@@ -625,31 +513,34 @@ class GameServer:
     # Fase de rodadas
     # ------------------------------------------------------------------
     def _play_round(self, ctx, round_no):
-        """Uma rodada: cada jogador pergunta UMA vez a outro jogador.
+        """Uma rodada: CADA jogador faz UMA pergunta a TODOS os outros.
 
-        O servidor sorteia a ordem de quem pergunta e escolhe quem responde:
-        o alvo é o jogador `k` posições à frente na ordem circular, com
-        k = 1 + (rodada-1) mod (N-1). Assim, de rodada para rodada, cada
-        jogador é interrogado por pessoas diferentes e ninguém pergunta a si.
+        O servidor embaralha a ordem de quem pergunta. Em cada turno:
+          1. o perguntador envia UMA pergunta (send_question);
+          2. o servidor a retransmite a toda a sala (broadcast_question);
+          3. todos os demais respondem, UM DE CADA VEZ, na ordem circular que
+             vem depois do perguntador; cada resposta é retransmitida na hora
+             (broadcast_answer). Quem responde por último já viu as respostas
+             anteriores - é aí que o Impostor tenta se camuflar.
         """
         self._check(ctx)
         order = ctx.active()
         random.shuffle(order)
         n = len(order)
-        offset = 1 + (round_no - 1) % (n - 1)
         self.broadcast("round_start", round=round_no, order=[p.name for p in order])
 
         for i, asker in enumerate(order):
-            target = order[(i + offset) % n]
             self._check(ctx)
-            if not (asker.connected and target.connected):
+            if not asker.connected:
                 self.broadcast("info", message="Turno de %s pulado (jogador ausente)." % asker.name)
                 continue
+            # Todos os outros respondem, na ordem circular após o perguntador.
+            responders = [order[(i + j) % n] for j in range(1, n)]
 
-            # --- 1) pergunta ---
+            # --- 1) pergunta (do perguntador para TODOS) ---
             self._drain(ctx)
             self.broadcast("turn_ask", round=round_no, turn=i + 1, turns=n,
-                           asker=asker.name, target=target.name,
+                           asker=asker.name, responders=[p.name for p in responders],
                            timeout=self.turn_timeout)
             got = self._collect(ctx, [asker], "send_question",
                                 self.turn_timeout, self._validate_text)
@@ -659,22 +550,28 @@ class GameServer:
                 continue
             question = got[asker]["text"]
             self.broadcast("broadcast_question", round=round_no,
-                           asker=asker.name, target=target.name, text=question)
+                           asker=asker.name, text=question)
 
-            # --- 2) resposta ---
-            self._drain(ctx)
-            self.broadcast("turn_answer", round=round_no, asker=asker.name,
-                           responder=target.name, question=question,
-                           timeout=self.turn_timeout)
-            got = self._collect(ctx, [target], "send_answer",
-                                self.turn_timeout, self._validate_text)
-            if target not in got:
-                self.broadcast("turn_timeout", player=target.name, action="resposta",
-                               reason="timeout" if target.connected else "disconnected")
-                continue
-            self.broadcast("broadcast_answer", round=round_no, asker=asker.name,
-                           responder=target.name, question=question,
-                           text=got[target]["text"])
+            # --- 2) respostas (uma por vez, em ordem definida pelo servidor) ---
+            for pos, responder in enumerate(responders, 1):
+                self._check(ctx)
+                if not responder.connected:
+                    self.broadcast("info", message="%s está ausente e não responderá." % responder.name)
+                    continue
+                self._drain(ctx)
+                self.broadcast("turn_answer", round=round_no, asker=asker.name,
+                               responder=responder.name, question=question,
+                               position=pos, total=len(responders),
+                               timeout=self.turn_timeout)
+                got = self._collect(ctx, [responder], "send_answer",
+                                    self.turn_timeout, self._validate_text)
+                if responder not in got:
+                    self.broadcast("turn_timeout", player=responder.name, action="resposta",
+                                   reason="timeout" if responder.connected else "disconnected")
+                    continue
+                self.broadcast("broadcast_answer", round=round_no, asker=asker.name,
+                               responder=responder.name, question=question,
+                               text=got[responder]["text"])
         self.broadcast("round_end", round=round_no)
 
     # ------------------------------------------------------------------
