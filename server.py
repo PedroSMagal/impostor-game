@@ -51,6 +51,7 @@ MAX_LINE = 4096                  # tamanho máximo de uma mensagem (caracteres)
 MAX_TEXT = 200                   # tamanho máximo de pergunta/resposta/palpite
 HANDSHAKE_TIMEOUT = 30           # segundos para o cliente enviar player_join
 NAME_RE = re.compile(r"^[\w\-]{1,15}$")   # nomes: letras/dígitos/_/-, 1 a 15
+NUM_SKINS = 10                   # skins disponíveis no frontend gráfico (0..9)
 
 # Estados do servidor (máquina de estados da sala)
 WAIT_PLAYERS = "WAIT_PLAYERS"   # lobby: aguardando jogadores e "pronto"
@@ -224,6 +225,7 @@ class Player:
         self.addr = addr
         self.name = None
         self.ready = False
+        self.skin = 0                    # índice da skin (usada só pelo frontend gráfico)
         self.connected = True
         self._send_lock = threading.Lock()
         # makefile() devolve um objeto de arquivo que facilita ler "uma linha
@@ -387,10 +389,22 @@ class GameServer:
                 return reject("Sala cheia (%d/%d)." % (MAX_PLAYERS, MAX_PLAYERS))
             if any(p.name.casefold() == name.casefold() for p in self.players):
                 return reject("Já existe um jogador com esse nome.")
+            # Skin é OPCIONAL (clientes de terminal não enviam). Se a skin pedida
+            # já estiver em uso, o servidor entrega a primeira skin livre.
+            try:
+                skin = int(data.get("skin", 0))
+            except (TypeError, ValueError):
+                skin = 0
+            if not 0 <= skin < NUM_SKINS:
+                skin = 0
+            used = {p.skin for p in self.players}
+            if skin in used:
+                skin = next(i for i in range(NUM_SKINS) if i not in used)
             player.name = name
+            player.skin = skin
             self.players.append(player)
             player.send("welcome", name=name, protocol=PROTOCOL_VERSION,
-                        min_players=MIN_PLAYERS, max_players=MAX_PLAYERS)
+                        min_players=MIN_PLAYERS, max_players=MAX_PLAYERS, skin=skin)
             self._broadcast_lobby("%s entrou na sala." % name)
         log.info("%s entrou (%d/%d)", name, len(self.players), MAX_PLAYERS)
         return True
@@ -457,7 +471,8 @@ class GameServer:
         with self.lock:
             self.broadcast(
                 "lobby_update",
-                players=[{"name": p.name, "ready": p.ready} for p in self.players],
+                players=[{"name": p.name, "ready": p.ready, "skin": p.skin}
+                     for p in self.players],
                 notice=notice, min_players=MIN_PLAYERS, max_players=MAX_PLAYERS)
 
     def _remove_player(self, player):
@@ -530,6 +545,7 @@ class GameServer:
         """Fluxo completo da partida. Retorna (resultado, mensagem, extras)."""
         self._set_state(IN_GAME)
         self.broadcast("start_game", players=[p.name for p in ctx.participants],
+                       skins={p.name: p.skin for p in ctx.participants},
                        theme=ctx.theme, min_turns=self.min_turns,
                        max_turns=self.max_turns, turn_timeout=self.turn_timeout)
         # Papéis são enviados individualmente: o Impostor NÃO recebe a palavra.
