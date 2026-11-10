@@ -51,7 +51,7 @@ MAX_LINE = 4096                  # tamanho máximo de uma mensagem (caracteres)
 MAX_TEXT = 200                   # tamanho máximo de pergunta/resposta/palpite
 HANDSHAKE_TIMEOUT = 30           # segundos para o cliente enviar player_join
 NAME_RE = re.compile(r"^[\w\-]{1,15}$")   # nomes: letras/dígitos/_/-, 1 a 15
-NUM_SKINS = 10                   # skins disponíveis no frontend gráfico (0..9)
+MAX_SKIN_LEN = 40                # tamanho máximo do nome da skin (nome do arquivo da imagem)
 
 # Estados do servidor (máquina de estados da sala)
 WAIT_PLAYERS = "WAIT_PLAYERS"   # lobby: aguardando jogadores e "pronto"
@@ -225,7 +225,7 @@ class Player:
         self.addr = addr
         self.name = None
         self.ready = False
-        self.skin = 0                    # índice da skin (usada só pelo frontend gráfico)
+        self.skin = ""                   # nome da skin (usado só pelo frontend gráfico)
         self.connected = True
         self._send_lock = threading.Lock()
         # makefile() devolve um objeto de arquivo que facilita ler "uma linha
@@ -373,6 +373,13 @@ class GameServer:
         if msg is None:
             return False
         type_, data = msg
+        if type_ == "skins_query":
+            # Consulta rápida do frontend gráfico (tela de escolha de skin): responde e
+            # fecha a conexão, sem entrar na sala.
+            with self.lock:
+                taken = [p.skin for p in self.players if p.skin]
+            player.send("skins_taken", skins=taken)
+            return False
         if type_ != "player_join":
             return reject("A primeira mensagem deve ser 'player_join'.")
         if data.get("protocol") != PROTOCOL_VERSION:
@@ -389,17 +396,11 @@ class GameServer:
                 return reject("Sala cheia (%d/%d)." % (MAX_PLAYERS, MAX_PLAYERS))
             if any(p.name.casefold() == name.casefold() for p in self.players):
                 return reject("Já existe um jogador com esse nome.")
-            # Skin é OPCIONAL (clientes de terminal não enviam). Se a skin pedida
-            # já estiver em uso, o servidor entrega a primeira skin livre.
-            try:
-                skin = int(data.get("skin", 0))
-            except (TypeError, ValueError):
-                skin = 0
-            if not 0 <= skin < NUM_SKINS:
-                skin = 0
-            used = {p.skin for p in self.players}
-            if skin in used:
-                skin = next(i for i in range(NUM_SKINS) if i not in used)
+            # Skin é OPCIONAL (clientes de terminal não enviam): é o NOME do arquivo
+            # de imagem escolhido no frontend gráfico. Duas pessoas não podem usar a mesma.
+            skin = " ".join(str(data.get("skin", "")).split())[:MAX_SKIN_LEN]
+            if skin and any(p.skin.casefold() == skin.casefold() for p in self.players):
+                return reject("A skin '%s' já está em uso. Escolha outra." % skin)
             player.name = name
             player.skin = skin
             self.players.append(player)
