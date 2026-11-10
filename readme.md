@@ -67,7 +67,7 @@ O jogo escolhido, **Impostor**, é um bom caso de uso porque exige exatamente o 
 
 O palpite ignora acentos, maiúsculas e espaços extras (`"Feijão"` = `" feijao "`). Há limite de tempo para cada ação (padrão: 60 s para perguntar/responder/palpitar e 45 s para votar); se o jogador não agir, o passo é pulado. Ao final, a sala volta ao lobby para uma nova partida.
 
-O servidor possui **10 temas** (comidas, animais e pets, profissões, lugares, objetos, veículos, vilões e antagonistas, superpoderes, monstros e criaturas, memes da internet) com **mais de 280 palavras** no total.
+O servidor possui **5 temas** (frutas, super-heróis, esportes, instrumentos musicais, brinquedos e brincadeiras) com **50 palavras** no total.
 
 ---
 
@@ -503,7 +503,7 @@ sequenceDiagram
 - **Chance de empate** para o Impostor descoberto, com comparação de palpite insensível a acentos, caixa e espaços.
 - **Escolha de *skin* com disponibilidade em tempo real:** a tela de login consulta o servidor (`skins_query`/`skins_taken`) sem entrar na sala e bloqueia as skins já usadas.
 - **Tolerância a falhas:** *timeouts* por ação, abstenção automática, tratamento de desconexão no meio da partida e aborto controlado (`ABORTED`).
-- **Conteúdo próprio:** 10 temas com mais de 280 palavras, com referências de cultura pop e memes brasileiros.
+- **Conteúdo próprio:** 5 temas de conhecimento geral para todos jogarem, e fácil adição ou remoção de temas pelo código.
 - **Interface gráfica própria** (Tkinter + Pillow) com sala em tela escalável, balões de fala, histórico e regras embutidas.
 
 ---
