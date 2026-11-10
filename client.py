@@ -1,14 +1,37 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-client_gui.py - Frontend gráfico (Tkinter + Pillow) do jogo IMPOSTOR.
+==============================================================================
+ client.py - Cliente gráfico (Tkinter + Pillow) do jogo multiplayer "IMPOSTOR"
+==============================================================================
 
-Pastas ao lado deste arquivo:
-    Images/        icones das skins (o NOME DO ARQUIVO é o nome da skin)
+Papel na arquitetura
+--------------------
+Cliente do modelo cliente-servidor. Conecta-se ao server.py por um socket TCP
+e fala o protocolo de aplicação IMPOSTOR/1.0 (JSON em UTF-8, uma mensagem por
+linha, terminada em '\\n'):
+
+    {"type": "<evento>", "data": {...}}
+
+O cliente NÃO decide regras do jogo: apenas envia as intenções do jogador
+(send_question, send_answer, send_continue_vote, send_vote, send_guess...) e
+exibe os eventos que o servidor anuncia (métodos on_<type> da classe App).
+
+Threads
+-------
+* Thread da interface (Tkinter): laço pump(), a cada 40 ms, consome a fila
+  `inbox`, atualiza o estado local e redesenha a sala.
+* Thread leitora (App.reader): bloqueia em readline() no socket e deposita
+  cada mensagem em `inbox`. Os widgets só são tocados pela thread da interface.
+* Threads curtas (_query_taken): consulta periódica das skins em uso (login).
+
+Pastas ao lado deste arquivo
+----------------------------
+    Images/        ícones das skins (o NOME DO ARQUIVO é o nome da skin)
     background/    imagem de fundo da sala (qualquer .png/.jpg; usa a primeira)
 
-Requisitos: Python 3.8+ e Pillow (pip install pillow).
-Uso:  python3 client_gui.py [--host 127.0.0.1] [--port 5000] [--name Ana]
+Requisitos: Python 3.8+, Tkinter e Pillow (pip install pillow).
+Uso:  python3 client.py [--host 127.0.0.1] [--port 5000] [--name Ana]
 Atalhos: F11 tela cheia | Esc sai da tela cheia | Enter = "Estou pronto" no lobby
 """
 import argparse
@@ -88,6 +111,7 @@ RULES = [
 # Imagens externas (pastas Images/ e background/)
 # --------------------------------------------------------------------------
 def _placeholder(label):
+    """Gera uma imagem 256x256 com a inicial do nome, usada quando falta a skin."""
     im = Image.new("RGB", (256, 256), "#07090e")
     d = ImageDraw.Draw(im)
     d.ellipse((24, 24, 232, 232), fill="#3a4a6a")
@@ -122,7 +146,7 @@ def load_background():
             files = sorted(p for p in d.iterdir() if p.suffix.lower() in IMG_EXTS)
             if files:
                 return Image.open(files[0]).convert("RGB")
-    print("Aviso: coloque uma imagem na pasta 'background' (ao lado do client_gui.py).")
+    print("Aviso: coloque uma imagem na pasta 'background' (ao lado do client.py).")
     return Image.new("RGB", (DW, DH), "#7dbcab")
 
 
@@ -151,6 +175,7 @@ def taken_avatar(img, d):
 
 
 def circle_avatar(img, d):
+    """Recorta a imagem em círculo (com suavização) e devolve um RGBA d x d."""
     big = d * 2
     im = img.resize((big, big), Image.LANCZOS).convert("RGBA")
     mask = Image.new("L", (big, big), 0)
@@ -164,16 +189,20 @@ def circle_avatar(img, d):
 # Canvas que desenha em coordenadas de projeto (1000x620) e escala sozinho
 # --------------------------------------------------------------------------
 def sfont(font, k):
+    """Escala o tamanho de uma fonte (família, tamanho, ...) pelo fator k, em pixels negativos."""
     fam, size, *rest = font
     return (fam, -max(7, int(round(size * k * 4 / 3)))) + tuple(rest)
 
 
 class SCanvas(tk.Canvas):
+    """Canvas que desenha em coordenadas de projeto (DW x DH) e se escala sozinho pelo fator k."""
     def __init__(self, master, k, **kw):
+        """Cria o canvas com tamanho DW*k x DH*k; k é o fator de escala atual."""
         self.k = k
         super().__init__(master, width=int(DW * k), height=int(DH * k), **kw)
 
     def _sc(self, args):
+        """Multiplica por k todas as coordenadas recebidas (números ou listas/tuplas)."""
         out = []
         for a in args:
             if isinstance(a, (list, tuple)):
@@ -183,6 +212,7 @@ class SCanvas(tk.Canvas):
         return out
 
     def _kw(self, kw):
+        """Escala as opções width e font de um create_*."""
         kw = dict(kw)
         if "width" in kw:
             kw["width"] = max(1, kw["width"] * self.k)
@@ -191,11 +221,13 @@ class SCanvas(tk.Canvas):
         return kw
 
     def bbox(self, *args):
+        """Devolve a caixa delimitadora já convertida de volta para coordenadas de projeto."""
         b = super().bbox(*args)
         return tuple(v / self.k for v in b) if b else b
 
 
 def _mk(name):
+    """Fabrica a versão escalada de Canvas.create_<name>: multiplica coordenadas, largura e fonte por k."""
     base = getattr(tk.Canvas, "create_" + name)
 
     def f(self, *a, **kw):
@@ -208,6 +240,7 @@ for _n in ("polygon", "oval", "rectangle", "line", "text", "image", "window"):
 
 
 def rrect(c, x0, y0, x1, y1, r, **kw):
+    """Desenha um retângulo com cantos arredondados (polígono suavizado) no canvas c."""
     pts = [x0 + r, y0, x1 - r, y0, x1, y0, x1, y0 + r, x1, y1 - r, x1, y1,
            x1 - r, y1, x0 + r, y1, x0, y1, x0, y1 - r, x0, y0 + r, x0, y0]
     return c.create_polygon(pts, smooth=True, **kw)
@@ -217,10 +250,12 @@ def rrect(c, x0, y0, x1, y1, r, **kw):
 # Aplicação
 # --------------------------------------------------------------------------
 class App(tk.Tk):
+    """Janela principal: tela de login, sala do jogo (canvas), barra de ações e tratamento do protocolo."""
     PASSIVE = {"info", "error", "pong", "lobby_update", "vote_progress",
                "continue_vote_cast"}
 
     def __init__(self, args):
+        """Monta a janela, carrega imagens, cria as telas e agenda pump() e poll_taken()."""
         super().__init__()
         self.title("IMPOSTOR")
         sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
@@ -266,6 +301,7 @@ class App(tk.Tk):
 
     # ------------------------------------------------------------------
     def reset_state(self):
+        """Zera todo o estado local da partida/conexão (jogadores, papel, balões, prazos...)."""
         self.me = ""
         self.players, self.skins, self.ready, self.gone = [], {}, set(), set()
         self.bubbles, self.active, self.spot = {}, None, None
@@ -289,6 +325,7 @@ class App(tk.Tk):
         self.dirty, self.bar_key = True, None
 
     def photo(self, skin, dia):
+        """Devolve (com cache) a foto circular da skin no diâmetro dia, já escalada por k."""
         size = max(8, int(dia * self.k))
         key = (skin, size)
         if key not in self.photos:
@@ -297,12 +334,14 @@ class App(tk.Tk):
         return self.photos[key]
 
     def mw(self, text):
+        """Mede a largura de um texto na fonte do nome, em coordenadas de projeto."""
         return self.fn_name.measure(text) / self.k
 
     # ------------------------------------------------------------------
     # Tela inicial
     # ------------------------------------------------------------------
     def build_login(self, args):
+        """Constrói a tela inicial: nome, servidor, porta, grade de skins e botão de entrar."""
         f = self.login = tk.Frame(self, bg=BG)
         tk.Label(f, text="IMPOSTOR", font=(self.fam, 32, "bold"), fg=GOLD,
                  bg=BG).pack(pady=(14, 0))
@@ -351,15 +390,18 @@ class App(tk.Tk):
         self.e_name.bind("<Return>", lambda _e: self.connect())
 
     def is_taken(self, i):
+        """True se a skin de índice i já está em uso por outro jogador (segundo o servidor)."""
         return self.icons[i][0].casefold() in self.taken_cf
 
     def select_skin(self, i):
+        """Seleciona a skin de índice i, ignorando as que estão em uso."""
         if self.is_taken(i):
             return                          # skin em uso: não dá para escolher
         self.sel_skin = self.icons[i][0]
         self.refresh_cells()
 
     def refresh_cells(self):
+        """Atualiza a grade de skins: marca a escolhida e escurece (com X) as indisponíveis."""
         for k, (cell, lb1, lb2) in enumerate(self.cells):
             taken = self.is_taken(k)
             lb1.configure(image=self.thumbs_x[k] if taken else self.thumbs[k])
@@ -371,6 +413,7 @@ class App(tk.Tk):
 
     # --- consulta periódica das skins já usadas (só na tela inicial) ---
     def poll_taken(self):
+        """A cada 2,5 s, na tela de login, consulta em segundo plano as skins em uso."""
         self.after(2500, self.poll_taken)
         try:
             while True:
@@ -388,6 +431,7 @@ class App(tk.Tk):
                          daemon=True).start()
 
     def _query_taken(self, host, port):
+        """Thread curta: abre uma conexão, envia skins_query, lê skins_taken e entrega o resultado à fila."""
         taken = None
         try:
             with socket.create_connection((host, port), timeout=2) as s:
@@ -402,6 +446,7 @@ class App(tk.Tk):
         self.polling = False
 
     def apply_taken(self, taken):
+        """Aplica a lista de skins em uso; se a escolhida foi tomada, troca por outra livre."""
         new = {str(t).casefold() for t in (taken or [])}
         if new == self.taken_cf:
             return
@@ -420,14 +465,16 @@ class App(tk.Tk):
         self.refresh_cells()
 
     def show_login(self, msg=""):
+        """Exibe a tela de login com uma mensagem opcional (erro ou aviso)."""
         self.game.pack_forget()
         self.login.pack(fill="both", expand=True)
         if not msg and self.no_icons:
-            msg = "Nenhuma imagem encontrada na pasta 'Images' (ao lado do client_gui.py)."
+            msg = "Nenhuma imagem encontrada na pasta 'Images' (ao lado do client.py)."
         self.lbl_login.configure(text=msg, fg="#ff8a80")
         self.e_name.focus_set()
 
     def connect(self):
+        """Valida o nome, abre o socket TCP, inicia a thread leitora e envia player_join."""
         name = self.v_name.get().strip()
         if not re.match(r"^[\w\-]{1,15}$", name):
             self.lbl_login.configure(text="Nome inválido: 1 a 15 letras, números, _ ou -.")
@@ -454,6 +501,7 @@ class App(tk.Tk):
     # Tela do jogo: sala (canvas) + barra de ações
     # ------------------------------------------------------------------
     def build_game(self):
+        """Constrói a tela do jogo: canvas da sala, barra de ações e botão 'Ver a palavra'."""
         g = self.game = tk.Frame(self, bg=BG)
         # a barra é empacotada primeiro: assim ela NUNCA é cortada
         self.bar = tk.Frame(g, bg="#0f1923", height=BAR_H)
@@ -473,11 +521,13 @@ class App(tk.Tk):
         g.bind("<Configure>", self.on_resize)
 
     def build_bg(self):
+        """Redimensiona a imagem de fundo para a escala atual e a aplica ao canvas."""
         img = cover(self.bg_src, int(DW * self.k), int(DH * self.k))
         self.bg_photo = ImageTk.PhotoImage(img)
         self.canvas.itemconfigure("bg", image=self.bg_photo)
 
     def on_resize(self, ev):
+        """Reage a mudanças de tamanho da janela (com 80 ms de atraso para evitar excesso)."""
         if ev.widget is not self.game:
             return
         if getattr(self, "_rs", None):
@@ -485,6 +535,7 @@ class App(tk.Tk):
         self._rs = self.after(80, self.apply_scale)
 
     def apply_scale(self):
+        """Recalcula o fator de escala k e reajusta canvas, fontes, fundo e fotos."""
         self._rs = None
         w, h = self.game.winfo_width(), self.game.winfo_height() - BAR_H
         if w < 50 or h < 50:
@@ -504,6 +555,7 @@ class App(tk.Tk):
         self.dirty = True
 
     def toggle_full(self, _e=None):
+        """Alterna o modo tela cheia (F11)."""
         self.attributes("-fullscreen", not self.attributes("-fullscreen"))
 
     def key_enter(self, _e=None):
@@ -515,6 +567,7 @@ class App(tk.Tk):
             self.send("player_ready")
 
     def set_peek(self, v):
+        """Liga/desliga a exibição temporária da palavra secreta (botão pressionado)."""
         self.peek = v
         self.dirty = True
 
@@ -523,6 +576,7 @@ class App(tk.Tk):
     # ------------------------------------------------------------------
     @staticmethod
     def reader(rfile, inbox):
+        """Thread leitora: lê uma linha JSON por vez do socket e a põe na fila; ao fim põe __closed__."""
         try:
             for line in rfile:
                 line = line.strip()
@@ -538,6 +592,7 @@ class App(tk.Tk):
         inbox.put(("__closed__", {}))
 
     def send(self, type_, **data):
+        """Envia uma mensagem {type, data} ao servidor; em falha de rede volta ao login."""
         try:
             payload = json.dumps({"type": type_, "data": data}, ensure_ascii=False) + "\n"
             self.sock.sendall(payload.encode("utf-8"))
@@ -545,6 +600,7 @@ class App(tk.Tk):
             self.to_login("Conexão perdida.")
 
     def close_socket(self):
+        """Fecha o socket (se existir) e o descarta."""
         try:
             self.sock.close()
         except (OSError, AttributeError):
@@ -552,6 +608,7 @@ class App(tk.Tk):
         self.sock = None
 
     def to_login(self, msg):
+        """Encerra a conexão, zera o estado e volta à tela de login com a mensagem msg."""
         if self.sock is None and self.login.winfo_ismapped():
             return
         self.close_socket()
@@ -559,6 +616,7 @@ class App(tk.Tk):
         self.show_login(msg)
 
     def on_close(self):
+        """Fecha a janela: avisa o servidor com player_quit e encerra o programa."""
         if self.sock:
             self.send("player_quit")
         self.close_socket()
@@ -568,6 +626,7 @@ class App(tk.Tk):
     # Laço principal
     # ------------------------------------------------------------------
     def pump(self):
+        """Laço principal da interface: executa _pump_once() e se reagenda a cada 40 ms."""
         try:
             self._pump_once()
         except Exception:
@@ -576,6 +635,7 @@ class App(tk.Tk):
         self.after(40, self.pump)
 
     def _pump_once(self):
+        """Consome mensagens da fila, pisca o destaque, envia 'pronto' pendente, redesenha e atualiza o cronômetro."""
         now = time.monotonic()
         try:
             if now >= self.pause_until:
@@ -602,12 +662,15 @@ class App(tk.Tk):
                 self.timer_lbl.configure(text="Tempo: %ds" % left)
 
     def pause(self, ms):
+        """Pausa o consumo de mensagens por ms milissegundos (dá tempo de ler a tela)."""
         self.pause_until = time.monotonic() + ms / 1000.0
 
     def say(self, main, sub=""):
+        """Define o texto do banner superior (principal e secundário)."""
         self.banner = (main, sub)
 
     def handle(self, t, d):
+        """Despacha uma mensagem do servidor para o método on_<type> correspondente."""
         if t == "__closed__":
             if self.welcomed:
                 self.to_login("Conexão com o servidor encerrada.")
@@ -623,6 +686,7 @@ class App(tk.Tk):
         self.dirty = True
 
     def set_pending(self, kind, timeout=None):
+        """Marca que o jogador precisa agir (ask, answer, continue, vote ou guess) e inicia o prazo."""
         self.pending = kind
         self.last_pending = (kind, timeout)
         self.pend_token += 1
@@ -632,6 +696,7 @@ class App(tk.Tk):
     # Eventos do servidor
     # ------------------------------------------------------------------
     def on_welcome(self, d):
+        """welcome: entrada aceita; guarda limites da sala e abre a tela do jogo (lobby)."""
         self.welcomed = True
         self.state = "WAIT_PLAYERS"
         self.min_players, self.max_players = d["min_players"], d["max_players"]
@@ -642,10 +707,12 @@ class App(tk.Tk):
         self.game.pack(fill="both", expand=True)
 
     def on_join_rejected(self, d):
+        """join_rejected: entrada recusada; fecha o socket e mostra o motivo no login."""
         self.close_socket()
         self.show_login("Entrada recusada: %s" % d["reason"])
 
     def on_lobby_update(self, d):
+        """lobby_update: atualiza jogadores, skins e quem está pronto."""
         self.players = [p["name"] for p in d["players"]]
         self.skins = {p["name"]: p.get("skin", "") for p in d["players"]}
         self.ready = {p["name"] for p in d["players"] if p["ready"]}
@@ -658,11 +725,13 @@ class App(tk.Tk):
             self.say(main, d["notice"])
 
     def on_state_change(self, d):
+        """state_change: guarda o estado do servidor; no lobby limpa balões e destaques."""
         self.state = d["state"]
         if self.state == "WAIT_PLAYERS":
             self.bubbles, self.active, self.spot, self.peek = {}, None, None, False
 
     def on_start_game(self, d):
+        """start_game: nova partida; guarda jogadores, tema e limites e zera balões e histórico."""
         self.players = d["players"]
         self.skins.update(d.get("skins", {}))
         self.theme, self.max_turns = d["theme"], d["max_turns"]
@@ -674,6 +743,7 @@ class App(tk.Tk):
         self.pause(2200)
 
     def on_role_assign(self, d):
+        """role_assign: recebe o papel (CIVILIAN ou IMPOSTOR) e, se civil, a palavra secreta."""
         self.role, self.word, self.theme = d["role"], d["word"], d["theme"]
         if self.role == "IMPOSTOR":
             self.say("VOCÊ É O IMPOSTOR!",
@@ -685,11 +755,13 @@ class App(tk.Tk):
         self.pause(5500)
 
     def on_turn_start(self, d):
+        """turn_start: início de turno; mostra a ordem das perguntas."""
         self.turn = d["turn"]
         self.say("Turno %d" % d["turn"], "Ordem das perguntas: " + " > ".join(d["order"]))
         self.pause(1500)
 
     def on_ask_prompt(self, d):
+        """ask_prompt: vez de alguém perguntar; se for a minha, habilita o campo de pergunta."""
         self.bubbles, self.active = {}, d["asker"]
         if d["asker"] == self.me:
             self.say("Sua vez de perguntar!", "Faça UMA pergunta sobre a palavra para todos.")
@@ -699,6 +771,7 @@ class App(tk.Tk):
                      "Pergunta %d/%d do turno %d" % (d["step"], d["steps"], d["turn"]))
 
     def on_broadcast_question(self, d):
+        """broadcast_question: mostra a pergunta no balão e a registra no histórico."""
         self.bubbles[d["asker"]] = ("q", d["text"])
         self.history.append({"turn": self.turn, "asker": d["asker"], "q": d["text"],
                              "answers": []})
@@ -707,6 +780,7 @@ class App(tk.Tk):
         self.pause(900)
 
     def on_answer_prompt(self, d):
+        """answer_prompt: vez de alguém responder; se for a minha, habilita o campo de resposta."""
         self.active = d["responder"]
         self.resp_pos, self.resp_total = d["position"], d["total"]
         if d["responder"] == self.me:
@@ -717,6 +791,7 @@ class App(tk.Tk):
                      "Resposta %d/%d" % (d["position"], d["total"]))
 
     def on_broadcast_answer(self, d):
+        """broadcast_answer: mostra a resposta no balão e a registra no histórico."""
         self.bubbles[d["responder"]] = ("a", d["text"])
         if self.history:
             self.history[-1]["answers"].append((d["responder"], d["text"]))
@@ -727,26 +802,31 @@ class App(tk.Tk):
         self.pause(6000 if last else 1100)      # a última resposta fica bem mais tempo
 
     def on_action_timeout(self, d):
+        """action_timeout: um jogador não agiu a tempo; o passo foi pulado."""
         self.say("%s não agiu a tempo" % d["player"], "O passo (%s) foi pulado." % d["action"])
         self.pause(1500)
 
     def on_turn_end(self, d):
+        """turn_end: todos já perguntaram; o turno terminou."""
         self.active = None
         self.say("Fim do turno %d" % d["turn"], "Todos já fizeram sua pergunta.")
         self.pause(1500)
 
     def on_ask_continue(self, d):
+        """ask_continue: abre a decisão Continuar x Votação e habilita os botões."""
         self.bubbles, self.active = {}, None
         self.say("Todos devem votar!", "Continuar (outro turno) ou Votação do impostor?")
         self.set_pending("continue", d.get("timeout"))
 
     def _show_continue_votes(self, d):
+        """Mostra, nos balões, quem votou em Votação e quem votou em Continuar."""
         for n in d["voters_vote"]:
             self.bubbles[n] = ("vote", "VOTAÇÃO")
         for n in d["voters_continue"]:
             self.bubbles[n] = ("cont", "CONTINUAR")
 
     def on_continue_vote_cast(self, d):
+        """continue_vote_cast: voto parcial (público); mostra contagem e quem falta votar."""
         self._show_continue_votes(d)
         sub = "VOTAÇÃO %d  ·  CONTINUAR %d" % (len(d["voters_vote"]), len(d["voters_continue"]))
         if d["waiting"]:
@@ -754,6 +834,7 @@ class App(tk.Tk):
         self.say("Todos devem votar!", sub)
 
     def on_continue_result(self, d):
+        """continue_result: resultado da decisão (vote ou continue)."""
         self._show_continue_votes(d)
         self.say("Vamos para a votação do impostor!" if d["decision"] == "vote"
                  else "Vamos jogar outro turno!",
@@ -761,6 +842,7 @@ class App(tk.Tk):
         self.pause(3200)
 
     def on_start_vote(self, d):
+        """start_vote: abre a votação do impostor; os candidatos excluem o próprio jogador."""
         self.bubbles, self.active = {}, None
         self.candidates = [c for c in d["candidates"] if c != self.me]
         self.say("Todos devem votar: quem é o Impostor?",
@@ -768,10 +850,12 @@ class App(tk.Tk):
         self.set_pending("vote", d.get("timeout"))
 
     def on_vote_progress(self, d):
+        """vote_progress: mostra quantos votos foram recebidos, sem revelar em quem."""
         self.say("Todos devem votar: quem é o Impostor?",
                  "Votos recebidos: %d/%d" % (d["received"], d["total"]))
 
     def on_vote_result(self, d):
+        """vote_result: apuração; guarda e exibe quem votou em quem e a contagem."""
         self.ballot, self.tally = d["ballot"], d["tally"]
         self.bubbles = {v: ("ballot", t) for v, t in d["ballot"].items()}
         self.say("Votação encerrada!",
@@ -780,6 +864,7 @@ class App(tk.Tk):
         self.pause(4500)
 
     def on_request_guess(self, d):
+        """request_guess: impostor descoberto; se for eu, habilito o campo de palpite."""
         self.bubbles, self.active, self.spot = {}, None, d["impostor"]
         if d["impostor"] == self.me:
             self.say("CHANCE DE EMPATE: adivinhe a palavra!", "Tema: %s" % d["theme"])
@@ -789,16 +874,19 @@ class App(tk.Tk):
                      "CHANCE DE EMPATE: ele tenta adivinhar a palavra...")
 
     def on_guess_result(self, d):
+        """guess_result: mostra o palpite do impostor e se acertou."""
         self.bubbles[d["impostor"]] = ("guess", d["guess"] or "(sem palpite)")
         self.say("ACERTOU!" if d["correct"] else "ERROU!", "Palpite de %s" % d["impostor"])
         self.pause(2800)
 
     def on_end_game(self, d):
+        """end_game: fim da partida; guarda o resultado e mostra a tela final."""
         self.end = d
         self.active = None
         self.show_end()
 
     def on_info(self, d):
+        """info: aviso do servidor; registra quem se desconectou para exibir o avatar apagado."""
         m = d["message"]
         if m.endswith(" desconectou-se."):
             self.gone.add(m[:-len(" desconectou-se.")])
@@ -806,6 +894,7 @@ class App(tk.Tk):
         self.pause(1200)
 
     def on_error(self, d):
+        """error: aviso do servidor; em INVALID_INPUT reabre a entrada para nova tentativa."""
         self.say("Aviso do servidor", d["message"])
         if d["code"] == "INVALID_INPUT" and self.last_pending and self.pending is None:
             kind, _timeout = self.last_pending
@@ -817,6 +906,7 @@ class App(tk.Tk):
     # Entrada do jogador
     # ------------------------------------------------------------------
     def submit_text(self, var):
+        """Envia pergunta, resposta ou palpite digitado, conforme a ação pendente."""
         text = var.get().strip()
         if not text or not self.pending:
             return
@@ -829,6 +919,7 @@ class App(tk.Tk):
         self.say("Enviado!", "Aguarde os outros jogadores.")
 
     def choose_continue(self, choice):
+        """Envia send_continue_vote com a escolha 'vote' ou 'continue'."""
         if self.pending != "continue":
             return
         self.pending = None
@@ -836,6 +927,7 @@ class App(tk.Tk):
         self.send("send_continue_vote", choice=choice)
 
     def cast_vote(self, target):
+        """Envia send_vote no jogador escolhido (o voto só aparece para quem votou)."""
         if self.pending != "vote":
             return
         self.pending = None
@@ -846,6 +938,7 @@ class App(tk.Tk):
         self.dirty = True
 
     def on_click(self, ev):
+        """Clique no canvas: durante a votação, vota no avatar clicado."""
         if self.pending != "vote":
             return
         px, py = ev.x / self.k, ev.y / self.k
@@ -859,6 +952,7 @@ class App(tk.Tk):
     # Janelas: histórico e regras
     # ------------------------------------------------------------------
     def _text_window(self, title, size):
+        """Cria uma janela com texto rolável e as tags de estilo usadas por regras e histórico."""
         w = tk.Toplevel(self)
         w.title(title)
         w.geometry(size)
@@ -886,6 +980,7 @@ class App(tk.Tk):
         return w, txt
 
     def open_rules(self):
+        """Abre (ou traz à frente) a janela de regras do jogo."""
         if self.rules_win and self.rules_win.winfo_exists():
             self.rules_win.lift()
             return
@@ -897,6 +992,7 @@ class App(tk.Tk):
         txt.configure(state="disabled")
 
     def open_history(self):
+        """Abre (ou traz à frente) a janela de histórico de perguntas e respostas."""
         if self.hist_win and self.hist_win.winfo_exists():
             self.hist_win.lift()
             self.refresh_history()
@@ -905,6 +1001,7 @@ class App(tk.Tk):
         self.refresh_history()
 
     def refresh_history(self):
+        """Redesenha o histórico da partida na janela, se ela estiver aberta."""
         if not (self.hist_win and self.hist_win.winfo_exists()):
             return
         txt = self.hist_txt
@@ -928,6 +1025,7 @@ class App(tk.Tk):
     # Barra de ações
     # ------------------------------------------------------------------
     def sync_bar(self):
+        """Reconstrói a barra de ações apenas quando o estado que a define mudou."""
         key = (self.pending, self.pend_token, self.state, self.me in self.ready,
                self.end is None)
         if key != self.bar_key:
@@ -935,6 +1033,7 @@ class App(tk.Tk):
             self.render_bar()
 
     def render_bar(self):
+        """Monta a barra de ações: pronto, campo de texto, Continuar/Votação, candidatos ou espera."""
         for w in self.bar.winfo_children():
             w.destroy()
         mode = self.pending
@@ -992,6 +1091,7 @@ class App(tk.Tk):
     # Desenho (tudo em coordenadas de projeto 1000x620)
     # ------------------------------------------------------------------
     def redraw(self):
+        """Redesenha a sala: avatares, destaque do impostor, balões, tema e banner."""
         c = self.canvas
         c.delete("dyn")
         self.draw_players()
@@ -1008,6 +1108,7 @@ class App(tk.Tk):
                                            and not self.end) else "hidden")
 
     def draw_one(self, name, x, y, dia, ring_extra=None):
+        """Desenha um avatar com anel, nome e marcas (pronto, você, saiu)."""
         c = self.canvas
         r = dia // 2
         gone = name in self.gone
@@ -1034,6 +1135,7 @@ class App(tk.Tk):
                       fill="#bbb" if gone else "white", tags="dyn")
 
     def draw_players(self):
+        """Desenha os jogadores nos assentos, exceto o impostor em destaque."""
         for i, name in enumerate(self.players[:5]):
             if name == self.spot:
                 continue                    # o impostor descoberto vai para o centro
@@ -1041,6 +1143,7 @@ class App(tk.Tk):
             self.draw_one(name, x, y, dia)
 
     def draw_spot(self):
+        """Desenha o impostor descoberto no centro, com a faixa 'CHANCE DE EMPATE'."""
         c = self.canvas
         c.create_rectangle(0, 0, DW, DH, fill="black", stipple="gray50", outline="",
                            tags="dyn")
@@ -1052,6 +1155,7 @@ class App(tk.Tk):
                       fill="#fff2c2", tags="dyn")
 
     def draw_bubbles(self):
+        """Desenha o balão (pergunta, resposta, voto ou palpite) de cada jogador."""
         for name, (kind, text) in self.bubbles.items():
             if name not in self.players[:5]:
                 continue
@@ -1065,6 +1169,7 @@ class App(tk.Tk):
             self.bubble(x, y - dia // 2 - 12, hdr, text, fill, edge, hcol, 250, maxh)
 
     def bubble(self, cx, bottom, hdr, text, fill, edge, hcol, maxw, maxh):
+        """Desenha um balão de fala, reduzindo o texto com reticências se não couber."""
         c = self.canvas
         body = text
         while True:
@@ -1090,6 +1195,7 @@ class App(tk.Tk):
                       width=maxw - 20, anchor="nw", tags="dyn")
 
     def draw_chips(self):
+        """Desenha a etiqueta com o tema e o número do turno."""
         c = self.canvas
         if self.theme and self.state != "WAIT_PLAYERS":
             txt = "TEMA: %s%s" % (self.theme, ("   ·   Turno %d" % self.turn) if self.turn else "")
@@ -1099,6 +1205,7 @@ class App(tk.Tk):
             c.create_text(DW / 2, 601, text=txt, font=self.f_name, fill=GOLD, tags="dyn")
 
     def draw_banner(self):
+        """Desenha o banner superior (ou a palavra secreta enquanto o botão é segurado)."""
         c = self.canvas
         main, sub = self.banner
         if self.peek and self.word:
@@ -1120,6 +1227,7 @@ class App(tk.Tk):
     # Tela final
     # ------------------------------------------------------------------
     def show_end(self):
+        """Cria os botões JOGAR DE NOVO e SAIR da tela final."""
         c = self.canvas
         c.delete("endwin")
         mk = lambda t, bg, cmd: tk.Button(c, text=t, bg=bg, fg="white", relief="flat",
@@ -1130,12 +1238,14 @@ class App(tk.Tk):
         c.create_window(610, 538, window=mk("SAIR", "#d1382e", self.on_close), tags="endwin")
 
     def close_end(self, again):
+        """Fecha a tela final; se again=True, marca o jogador como pronto para nova partida."""
         self.canvas.delete("endwin")
         self.end = None
         self.want_ready = again
         self.dirty = True
 
     def draw_end(self):
+        """Desenha a tela final: resultado, impostor, tema, palavra, votos e palpite."""
         c, d = self.canvas, self.end
         res, imp = d["result"], self.role == "IMPOSTOR"
         if res == "DRAW":
@@ -1175,6 +1285,7 @@ class App(tk.Tk):
 
 
 def main():
+    """Lê os argumentos de linha de comando (--host, --port, --name) e inicia a interface."""
     ap = argparse.ArgumentParser(description="Frontend gráfico do jogo IMPOSTOR")
     ap.add_argument("--host", default="127.0.0.1", help="IP/host do servidor")
     ap.add_argument("--port", type=int, default=5000, help="porta do servidor")

@@ -1,643 +1,526 @@
-# 🕵️ IMPOSTOR — Jogo multiplayer de dedução social sobre sockets TCP
+# 🕵️ IMPOSTOR — Jogo de dedução multiplayer (Cliente-Servidor / TCP)
 
-> Projeto acadêmico de **Redes de Computadores / Sistemas Distribuídos**.
-> Arquitetura **Cliente-Servidor**, comunicação por **sockets TCP**, servidor **multithread**,
-> com um **protocolo de camada de aplicação próprio** (`IMPOSTOR/1.0`).
-> Linguagem: **Python 3** — somente biblioteca padrão.
+Aplicação distribuída no modelo **cliente-servidor** em que de 3 a 5 jogadores, cada um em seu próprio computador, jogam uma partida de dedução social pela rede. A comunicação é feita por **sockets TCP** usando um **protocolo de camada de aplicação próprio** (`IMPOSTOR/1.0`), documentado neste arquivo.
+
+> Trabalho da disciplina de Redes de Computadores — UESC.
+
+| | |
+|---|---|
+| **Linguagem** | Python 3 |
+| **Transporte** | TCP (porta padrão `5000`) |
+| **Servidor** | `server.py` (somente biblioteca padrão) |
+| **Cliente** | `client.py` (interface gráfica Tkinter + Pillow) |
+| **Equipe** | André Nascimento Pardinho, Cauan Mendonça Valadão, Guilherme Afonso Bongestab, Jéssica Meira Costa e Pedro Henrique Soares Magalhães |
 
 ---
 
 ## Sumário
 
-1. [Propósito e Funcionamento da Aplicação](#1-propósito-e-funcionamento-da-aplicação)
-2. [Requisitos Mínimos de Funcionamento](#2-requisitos-mínimos-de-funcionamento)
-3. [Motivação da Escolha do Protocolo de Transporte (TCP)](#3-motivação-da-escolha-do-protocolo-de-transporte-tcp)
-4. [Protocolo da Camada de Aplicação — `IMPOSTOR/1.0`](#4-protocolo-da-camada-de-aplicação--impostor10)
-5. [Arquitetura e Concorrência](#5-arquitetura-e-concorrência)
-6. [Testes realizados](#6-testes-realizados)
-7. [Decisões de projeto e diferenciais](#7-decisões-de-projeto-e-diferenciais)
-8. [Limitações conhecidas e trabalhos futuros](#8-limitações-conhecidas-e-trabalhos-futuros)
-9. [Estrutura do repositório](#9-estrutura-do-repositório)
+1. [Propósito da aplicação](#1-propósito-da-aplicação)
+2. [Como o jogo funciona](#2-como-o-jogo-funciona)
+3. [Arquitetura](#3-arquitetura)
+4. [Por que TCP?](#4-por-que-tcp)
+5. [Requisitos mínimos](#5-requisitos-mínimos)
+6. [Instalação e execução](#6-instalação-e-execução)
+7. [Protocolo de camada de aplicação — IMPOSTOR/1.0](#7-protocolo-de-camada-de-aplicação--impostor10)
+8. [Estrutura do repositório](#8-estrutura-do-repositório)
+9. [Originalidade e diferenciais](#9-originalidade-e-diferenciais)
+10. [Limitações conhecidas](#10-limitações-conhecidas)
 
 ---
 
-## 1. Propósito e Funcionamento da Aplicação
+## 1. Propósito da aplicação
 
-### 1.1 O que é
+O objetivo é demonstrar, de forma prática, um sistema distribuído em que **vários clientes mantêm conexões simultâneas e de longa duração com um servidor central** que aplica as regras, controla de quem é a vez e retransmite eventos em tempo real a todos.
 
-**Impostor** é um jogo de dedução social para **3 a 5 jogadores**, inspirado em jogos como *Among Us* e *Spyfall*.
-Todos recebem um **tema** (ex.: `COMIDA`). Todos os jogadores **normais** também recebem a **palavra secreta**
-(ex.: `FEIJÃO`), mas **um jogador sorteado é o Impostor** e **não sabe a palavra** — só conhece o tema.
-O jogo é dividido em **turnos**. Em cada turno, **cada jogador faz uma pergunta para TODOS os outros** (um de cada
-vez), e todos respondem. **Quando todos já perguntaram, o turno acaba** e os jogadores votam — **em tempo real e de
-forma pública** — entre **CONTINUAR** (jogar outro turno) e **VOTAÇÃO** (votar no impostor). O Impostor tenta se
-disfarçar sem saber a palavra e, na votação final, todos escolhem quem acham que é o Impostor.
+O jogo escolhido, **Impostor**, é um bom caso de uso porque exige exatamente o que um protocolo de aplicação precisa resolver:
 
-### 1.2 Regras implementadas
+- **Informação assimétrica:** todos recebem o *tema*, mas só os jogadores comuns recebem a *palavra secreta*. O servidor envia mensagens **individuais** (`role_assign`) e mensagens **para toda a sala** (broadcast).
+- **Sincronização de turnos:** só quem tem a vez pode agir; o servidor valida e rejeita ações fora de hora.
+- **Eventos em tempo real:** respostas, votos parciais e resultados aparecem para todos na hora.
+- **Máquina de estados** bem definida (lobby → turnos → decisão → votação → palpite → fim).
+- **Tolerância a falhas:** timeouts por ação e tratamento de desconexão no meio da partida.
 
-| # | Regra | Onde é aplicada |
-|---|-------|-----------------|
-| 1 | O servidor aceita de **3 a 5** jogadores. A 6ª conexão é recusada (`join_rejected`: sala cheia). | `server.py › _handshake` |
-| 2 | A partida só começa quando há **≥ 3 jogadores e todos** enviaram `player_ready`. | `server.py › _maybe_start` |
-| 3 | O servidor **sorteia** um tema, uma palavra e **1 Impostor**. | `server.py › _run_game` |
-| 4 | Jogadores normais recebem **tema + palavra**; o Impostor recebe **só o tema** e o aviso de que é o Impostor. | `role_assign` (enviado individualmente) |
-| 5 | **Turnos controlados pelo servidor:** um **turno** termina quando **todos os jogadores já fizeram uma pergunta**. Para cada perguntador (ordem sorteada pelo servidor), ele faz **UMA pergunta para TODOS os outros**; o servidor faz **broadcast** da pergunta e chama **cada um dos demais, um por vez**, para responder, retransmitindo cada resposta à sala. | `server.py › _play_turn` |
-| 6 | **Ao fim de CADA turno** (quando todos já perguntaram), o servidor abre a decisão: *"Continuar (outro turno) ou Votação (do impostor)?"*. Cada jogador vota e **a sala vê em tempo real quem votou em Votação e quem votou em Continuar**. Se a **maioria** escolher Votação, abre a votação do impostor; senão, começa outro turno. | `server.py › _ask_continue` |
-| 7 | **Votação:** cada jogador envia seu voto ao servidor. | `server.py › _voting_phase` |
-| 8 | Mais votado **não** é o Impostor → **Impostor vence**. | `_voting_phase` |
-| 9 | Mais votado **é** o Impostor → ele perde a votação, **mas ganha uma chance de adivinhar a palavra**. | `server.py › _guess_phase` |
-| 10 | Impostor **acerta** a palavra → **EMPATE**. Impostor **erra** → **Impostor perde definitivamente**. | `_guess_phase` |
+---
 
-**Regras complementares (decisões do projeto para cobrir casos de borda):**
+## 2. Como o jogo funciona
 
-* **Empate na votação** (dois ou mais jogadores com o mesmo número de votos no topo, ou nenhum voto) →
-  ninguém é eliminado → o **Impostor vence**.
-* **"Maioria"** para ir à votação do impostor significa **mais da metade dos jogadores presentes**. **Empate ou omissão =
-  Continuar (outro turno).** Para o jogo não ser infinito, ao atingir `--max-turns` (padrão 5) a votação do impostor é obrigatória.
-* **Respostas em sequência e públicas:** cada resposta é retransmitida na hora, então quem responde depois já viu as
-  respostas anteriores (é aí que o Impostor tenta se camuflar). A ordem de quem pergunta é sorteada a cada turno (todos perguntam exatamente uma vez por turno) e a ordem de quem responde é sorteada a cada pergunta.
-* **Decisão pública e ao vivo:** diferentemente da votação final do impostor (que só revela os votos na apuração), os votos de
-  *Continuar x Votação* são mostrados a todos **assim que são dados**, com o placar parcial e quem ainda falta votar.
-* **Ninguém vota em si mesmo** (o servidor rejeita).
-* O palpite do Impostor ignora **acentos, maiúsculas e espaços extras** (`feijao` = `FEIJÃO`).
-* **Tempo limite:** se um jogador não agir no prazo (padrão 60 s para perguntar/responder, 45 s para votar),
-  o turno é pulado / o voto é computado como abstenção — o jogo nunca trava.
-* Se o **Impostor desconectar** ou restarem **menos de 3 jogadores**, a partida é encerrada (`ABORTED`).
-* Ao terminar, a sala **volta ao lobby** e todos podem jogar **de novo** sem reconectar.
+**Objetivo.** Todos os jogadores recebem um **tema** (ex.: *Comidas*, *Lugares*, *Vilões*). Os jogadores normais também recebem a **palavra secreta**. Um jogador, sorteado pelo servidor, é o **Impostor**: ele só conhece o tema e precisa se disfarçar.
 
-### 1.3 Visão geral do fluxo de uma partida
+**Um turno**
+1. Um jogador por vez faz **uma pergunta** sobre a palavra para todos.
+2. Os demais respondem **um de cada vez** (ordem sorteada pelo servidor). As respostas são públicas — quem responde por último já viu as anteriores.
+3. Quando todos já perguntaram, o turno termina.
+
+**Fim de cada turno: Continuar ou Votação?** Todos votam, ao vivo e publicamente. É necessária a **maioria absoluta** (mais da metade dos jogadores presentes) para ir à votação; empate ou omissão significa *continuar*. Ao atingir o limite de turnos (padrão: 5), a votação é obrigatória.
+
+**Votação do Impostor.** Cada jogador vota em quem acha que é o impostor (ninguém vota em si mesmo). Os votos só são revelados na apuração.
+
+**Resultado**
+
+| Situação | Resultado |
+|---|---|
+| O mais votado **não** é o impostor | **Impostor vence** |
+| Empate na votação (ou nenhum voto) | **Impostor vence** |
+| O mais votado **é** o impostor e ele **acerta** a palavra | **Empate** |
+| O mais votado **é** o impostor e ele **erra** a palavra | **Jogadores vencem** |
+
+O palpite ignora acentos, maiúsculas e espaços extras (`"Feijão"` = `" feijao "`). Há limite de tempo para cada ação (padrão: 60 s para perguntar/responder/palpitar e 45 s para votar); se o jogador não agir, o passo é pulado. Ao final, a sala volta ao lobby para uma nova partida.
+
+O servidor possui **10 temas** (comidas, animais e pets, profissões, lugares, objetos, veículos, vilões e antagonistas, superpoderes, monstros e criaturas, memes da internet) com **mais de 280 palavras** no total.
+
+---
+
+## 3. Arquitetura
 
 ```
- LOBBY ──► TURNO (todos perguntam, 1 de cada vez) ──► fim do turno: CONTINUAR x VOTAÇÃO (ao vivo) ──► VOTAÇÃO DO IMPOSTOR ──┬──► Impostor vence
-   ▲               ▲                                         │                                                           │
-   │               └──────────── "Continuar" (outro turno) ◄─┘                                                           └──► Impostor descoberto ──► PALPITE ──► Empate / Impostor perde
-   └───────────────────────────────────────── nova partida ◄────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+ ┌──────────────┐                                   ┌────────────────────────────────────┐
+ │  client.py   │  TCP  (JSON por linha)            │              server.py             │
+ │  Jogador 1   │◄─────────────────────────────────►│  thread principal: accept()        │
+ └──────────────┘                                   │                                    │
+ ┌──────────────┐                                   │  thread por cliente (handle_client)│
+ │  client.py   │◄─────────────────────────────────►│   └─ valida msgs e põe em fila     │
+ │  Jogador 2   │                                   │                                    │
+ └──────────────┘                                   │  thread da partida (_run_game)     │
+        ...                                         │   └─ "árbitro": máquina de estados │
+ ┌──────────────┐                                   │      consome a fila de eventos     │
+ │  client.py   │◄─────────────────────────────────►│                                    │
+ │  Jogador 5   │                                   └────────────────────────────────────┘
+ └──────────────┘
 ```
 
-**Como um turno funciona.** O servidor sorteia a ordem dos perguntadores. Para **cada** perguntador:
+### Servidor (`server.py`)
 
-1. o servidor convida o **perguntador** (`ask_prompt`) e ele envia **uma pergunta** (`send_question`);
-2. o servidor retransmite a pergunta a **toda a sala** (`broadcast_question`);
-3. **todos os outros jogadores** respondem, **um de cada vez**, numa ordem sorteada
-   (`answer_prompt` → `send_answer` → `broadcast_answer`, repetido para cada um).
+- **Thread principal** — `accept()` em loop; cria uma thread para cada conexão.
+- **Uma thread por cliente** (`handle_client`) — faz o *handshake*, lê mensagens (uma linha JSON por vez), valida o formato e deposita os eventos de jogo numa `queue.Queue`.
+- **Uma thread de partida** (`_run_game`) — é o **árbitro**. É a única que executa a lógica do jogo e decide de quem é a vez, consumindo a fila de eventos. Assim, não há disputa entre threads pela lógica do jogo.
+- **Estado compartilhado** (lista de jogadores e estado atual) protegido por `RLock`; o envio a cada jogador é protegido por um `Lock` próprio, para que linhas JSON de threads diferentes não se misturem no fluxo TCP.
+- **O servidor é a fonte da verdade:** sorteia tema, palavra, impostor e ordens; valida toda ação; o cliente apenas exibe e envia intenções.
 
-Depois que **todos** os jogadores fizeram a sua pergunta, o servidor encerra o turno (`turn_end`).
-Com **N** jogadores, um turno completo tem **N perguntas e N × (N − 1) respostas** (com 4 jogadores: 4 perguntas e 12 respostas).
+### Cliente (`client.py`)
 
-**Decisão ao fim do turno (em tempo real).** O servidor abre a decisão (`ask_continue`): cada jogador envia `vote`
-(**Votação**) ou `continue` (**Continuar**). **A cada voto**, o servidor retransmite à sala o placar parcial
-(`continue_vote_cast`): quem votou em Votação, quem votou em Continuar e quem ainda falta. Quando todos votam (ou o
-tempo acaba), o servidor anuncia o resultado (`continue_result`). Se **mais da metade** escolheu Votação, começa a
-votação do impostor; caso contrário (inclusive em empate ou omissão), começa **outro turno**.
-Com `--min-turns` (padrão 1) você define quantos turnos completos são jogados antes da primeira decisão.
+- Interface gráfica em **Tkinter + Pillow**: tela de login (nome, servidor, porta e escolha de *skin*), sala com avatares em círculo, balões de pergunta/resposta/voto, barra de ações, janela de regras e histórico da partida.
+- Uma **thread leitora** (`reader`) recebe as linhas do socket e as coloca numa fila (`inbox`); o laço da interface (`pump`, a cada 40 ms) consome a fila e despacha para os métodos `on_<tipo-da-mensagem>`. Isso mantém a interface fluida sem acessar widgets a partir de outra thread.
+- Na tela de login, uma consulta rápida e periódica (`skins_query`, a cada ~2,5 s) mostra em tempo real quais *skins* já estão em uso.
 
-### 1.4 Exemplo de partida (visão de **Ana**, jogadora normal, sala com 3 jogadores)
+**Principais componentes do `client.py`**
 
-```
->>> Você é um JOGADOR NORMAL.
-    Tema: COMIDA   |   Palavra secreta: FEIJÃO
+| Componente | Papel |
+|---|---|
+| `App` (`tk.Tk`) | Janela principal: guarda o estado local (`reset_state`), trata as mensagens do servidor (métodos `on_<type>`) e envia as ações do jogador (`send`) |
+| `reader` | Thread leitora: lê uma linha JSON por vez do socket e a deposita em `inbox`; ao fim da conexão deposita `__closed__` |
+| `pump` / `_pump_once` | Laço da interface (40 ms): consome `inbox`, chama `handle`, redesenha a sala e atualiza o cronômetro |
+| `set_pending(kind, timeout)` | Marca que o jogador precisa agir (`ask`, `answer`, `continue`, `vote`, `guess`) e inicia a contagem regressiva |
+| `submit_text`, `choose_continue`, `cast_vote` | Convertem a ação do jogador na mensagem `send_question` / `send_answer` / `send_guess`, `send_continue_vote` ou `send_vote` |
+| `render_bar` / `sync_bar` | Montam a barra de ações de acordo com o que o servidor está pedindo |
+| `redraw`, `draw_*`, `SCanvas` | Desenho da sala em coordenadas de projeto 1000×620, com escala automática |
+| `load_icons`, `load_background` | Carregam as *skins* (`Images/`) e o fundo (`background/`) |
 
-============================================================
- TURNO 1  -  todos perguntam uma vez. Ordem das perguntas: Caio > Ana > Bia
-============================================================
+O cliente **não decide nada sobre as regras**: apenas exibe o que o servidor anuncia e envia a intenção do jogador. Se o servidor rejeitar uma ação, ele responde com `error` (ver 7.6) e o cliente reabre a entrada quando o erro é `INVALID_INPUT`.
 
------ Pergunta 1/3 (turno 1) -----
-Vez de Caio fazer uma pergunta para todos...
-  [PERGUNTA] Caio (para todos): Você come isso no almoço?
+---
 
-*** Sua vez de RESPONDER (1/2) à pergunta de Caio: "Você come isso no almoço?"
-  -> Digite sua RESPOSTA: Quase todo dia!
-  [RESPOSTA] Ana: Quase todo dia!
-  Aguardando Bia responder (2/2)...
-  [RESPOSTA] Bia: Depende do dia.
+## 4. Por que TCP?
 
------ Pergunta 2/3 (turno 1) -----
-*** SUA VEZ! Faça UMA pergunta sobre a palavra para TODOS os outros.
-    Quem vai responder, em ordem: Bia, Caio
-  -> Digite sua PERGUNTA: Combina com arroz?
-  ... (respostas de Bia e Caio) ...
+Escolhemos o **TCP** em vez do UDP pelos seguintes motivos:
 
------ Pergunta 3/3 (turno 1) -----
-  ... (pergunta de Bia e as respostas) ...
+| Necessidade do jogo | Como o TCP atende |
+|---|---|
+| **Nenhuma mensagem pode ser perdida.** Uma pergunta, resposta, voto ou palpite perdido travaria a partida ou alteraria o resultado. | Entrega confiável com retransmissão automática. |
+| **A ordem importa.** `ask_prompt` → `broadcast_question` → `answer_prompt` → ... precisam chegar na sequência em que foram enviados. | Entrega **ordenada** dos bytes. |
+| **O servidor precisa saber quem está conectado.** Entrada/saída de jogadores, desconexão do impostor e "sala cheia" dependem de conexões. | Protocolo **orientado a conexão**; fechamento/queda são detectados (EOF, `OSError`, `SO_KEEPALIVE`). |
+| **Tráfego leve e interativo, sem exigência de tempo real estrito.** O jogo é por turnos; mensagens são pequenas e esperadas em segundos. | A latência extra do TCP é irrelevante; `TCP_NODELAY` evita o atraso do algoritmo de Nagle. |
 
-===== Fim do turno 1: todos já fizeram sua pergunta =====
+Com UDP teríamos de reimplementar na aplicação confirmações, retransmissão, ordenação e controle de sessão — complexidade sem nenhum ganho para um jogo de turnos.
 
-############################################################
- Fim do turno 1: todos já fizeram sua pergunta. Desejam continuar (outro turno) ou ir para a Votação do impostor?
- (maioria absoluta precisa escolher VOTAÇÃO; empate ou omissão = CONTINUAR)
- Os votos aparecem na tela em tempo real.
-############################################################
-  -> [v] VOTAÇÃO (votar no impostor)  |  [c] CONTINUAR (outro turno): c
+Como o TCP é um **fluxo de bytes sem fronteiras de mensagem**, o protocolo define seu próprio *framing*: **uma mensagem JSON por linha, terminada em `\n`** (veja a seção 7.1).
 
-  >> Ana votou em CONTINUAR  (1/3 votos)
-      VOTAÇÃO   (0): -
-      CONTINUAR (1): Ana
-      aguardando    : Bia, Caio
+---
 
-  >> Caio votou em VOTAÇÃO  (2/3 votos)
-      VOTAÇÃO   (1): Caio
-      CONTINUAR (1): Ana
-      aguardando    : Bia
+## 5. Requisitos mínimos
 
-  >> Bia votou em CONTINUAR  (3/3 votos)
-      VOTAÇÃO   (1): Caio
-      CONTINUAR (2): Ana, Bia
-      aguardando    : -
+**Servidor**
+- Python **3.8+** (somente biblioteca padrão — nenhuma instalação adicional).
+- Porta **TCP 5000** (ou outra escolhida) liberada no firewall.
 
---- Resultado final da decisão ---
-  VOTAÇÃO   (1): Caio
-  CONTINUAR (2): Ana, Bia
-  =>  CONTINUAR: começa outro turno.
-```
+**Cliente (cada jogador)**
+- Python **3.8+** com **Tkinter** (no Linux: `sudo apt install python3-tk`).
+- **Pillow**: `pip install pillow`.
+- Resolução de tela de pelo menos ~520×420 (a interface se adapta ao tamanho da janela).
+- Pasta `Images/` com **pelo menos 5 imagens** (uma por jogador possível; sem imagens o cliente usa uma skin "Padrão" única) (`.png`, `.jpg`, `.jpeg`, `.webp` ou `.bmp`) — o **nome do arquivo é o nome da skin** e duas pessoas não podem usar a mesma skin.
+- Pasta `background/` com uma imagem de fundo da sala (usa a primeira encontrada; se não houver, usa cor lisa).
 
-### 1.5 Como executar (resumo)
+**Rede e jogadores**
+- Conectividade TCP entre cada cliente e o servidor (mesma máquina, rede local ou Internet com porta aberta).
+- **De 3 a 5 jogadores** (3 clientes conectados e "prontos" já iniciam a partida). Para testar sozinho, abra 3 instâncias de `client.py` na mesma máquina.
+
+---
+
+## 6. Instalação e execução
 
 ```bash
-# Terminal 1 – servidor
-python3 server.py --port 5000
-
-# Terminais 2, 3, 4... – um cliente por jogador (mesma máquina ou outras máquinas da rede)
-python3 client.py --host 127.0.0.1 --port 5000 --name Ana
-python3 client.py --host 127.0.0.1 --port 5000 --name Bia
-python3 client.py --host 127.0.0.1 --port 5000 --name Caio
+git clone <URL-DO-REPOSITORIO>
+cd <pasta-do-projeto>
+pip install pillow
 ```
 
-Em cada cliente, digite **`pronto`** no lobby. Quando todos (mínimo 3) estiverem prontos, a partida começa.
-Siga os prompts `->` na tela. Comandos: `/ajuda`, `/ping` (mede latência), `/sair`.
-
----
-
-## 2. Requisitos Mínimos de Funcionamento
-
-| Item | Requisito |
-|------|-----------|
-| **Linguagem** | **Python 3.8 ou superior** (desenvolvido e testado em Python 3.12). |
-| **Bibliotecas** | Apenas a **biblioteca padrão**: `socket`, `threading`, `queue`, `json`, `argparse`, `logging`, `re`, `time`, `unicodedata`, `collections`, `random`, `os`, `sys`. **Nenhum `pip install` necessário.** |
-| **Sistema operacional** | Linux, macOS ou Windows (terminal com suporte a UTF-8 para acentos). |
-| **Rede** | Os clientes precisam alcançar o IP/porta TCP do servidor. Em LAN, libere a porta (padrão `5000`) no firewall do servidor. |
-| **Jogadores** | Mínimo 3 e máximo 5 clientes simultâneos. |
-
-### 2.1 Executando o servidor
+### 6.1 Servidor
 
 ```bash
-python3 server.py [--host 0.0.0.0] [--port 5000] [--min-turns 1] [--max-turns 5]
-                  [--turn-timeout 60] [--vote-timeout 45]
+python3 server.py                       # escuta em 0.0.0.0:5000
+python3 server.py --port 6000 --max-turns 3 --turn-timeout 90
 ```
 
-| Parâmetro | Padrão | Significado |
-|-----------|--------|-------------|
-| `--host` | `0.0.0.0` | Interface de escuta (`0.0.0.0` = todas). |
-| `--port` | `5000` | Porta TCP. |
-| `--min-turns` | `1` | Turnos **completos** (todos perguntaram) antes da 1ª decisão *Continuar x Votação* (**número configurável**). Com `1`, a decisão acontece ao fim de **todo** turno. |
-| `--max-turns` | `5` | Ao atingir este número de turnos, a votação do impostor é obrigatória (sem nova decisão). |
-| `--turn-timeout` | `60` | Segundos para cada pergunta, resposta ou palpite. |
-| `--vote-timeout` | `45` | Segundos para votar / decidir "Continuar x Votação". |
+| Parâmetro | Padrão | Descrição |
+|---|---|---|
+| `--host` | `0.0.0.0` | Interface de escuta |
+| `--port` | `5000` | Porta TCP |
+| `--min-turns` | `1` | Turnos completos antes da 1ª decisão "Continuar × Votação" |
+| `--max-turns` | `5` | Ao atingir este número de turnos, a votação é obrigatória |
+| `--turn-timeout` | `60` | Segundos para perguntar, responder ou palpitar |
+| `--vote-timeout` | `45` | Segundos para votar (Continuar × Votação e votação do impostor) |
 
-### 2.2 Executando os clientes
+### 6.2 Cliente
 
 ```bash
-python3 client.py --host <IP_DO_SERVIDOR> --port 5000 --name <SEU_NOME>
+python3 client.py                                   # conecta em 127.0.0.1:5000
+python3 client.py --host 192.168.0.10 --port 5000 --name Ana
 ```
 
-* **Mesma máquina:** use `--host 127.0.0.1` e abra um terminal por jogador.
-* **Rede local:** descubra o IP do servidor (`ip addr` / `ipconfig`) e use-o em `--host`.
-* O nome deve ter de 1 a 15 caracteres (letras, números, `_` ou `-`) e ser único na sala.
+1. Digite o **nome** (1 a 15 letras, números, `_` ou `-`), confirme o **servidor/porta** e escolha uma **skin**.
+2. Clique em **ENTRAR NA SALA**.
+3. No lobby, clique em **ESTOU PRONTO** (ou pressione `Enter`). A partida começa quando houver **3 a 5 jogadores e todos estiverem prontos**.
 
----
+Atalhos: `F11` tela cheia · `Esc` sai da tela cheia · `Enter` = "Estou pronto" no lobby.
+Durante a partida: botão **"Ver a palavra (segure)"** mostra de novo a palavra (só para você) e **"Histórico"** lista as perguntas e respostas.
 
-## 3. Motivação da Escolha do Protocolo de Transporte (TCP)
+### 6.3 Jogando em máquinas diferentes
 
-O jogo foi implementado sobre **TCP (`SOCK_STREAM`)**, e não UDP. A decisão é técnica e decorre da natureza do
-problema: **um jogo por turnos é um sistema distribuído cuja correção depende de todos os participantes terem a
-mesma visão do estado da partida, na mesma ordem.**
+Quem hospeda roda `server.py` e informa seu IP (ex.: `ip addr` / `ipconfig`); os demais colocam esse IP no campo **Servidor**.
 
-### 3.1 Entrega garantida e retransmissão
-Cada evento do jogo (a pergunta, a resposta, o voto, o papel secreto) é **semanticamente indispensável**.
-Se um único pacote `send_vote` ou `role_assign` fosse perdido, o jogo travaria ou ficaria injusto. O TCP usa
-**números de sequência, ACKs e retransmissão por timeout/ACKs duplicados**, entregando cada byte **ou** informando a
-falha. Com UDP, teríamos que reimplementar ACKs, timers e retransmissão na aplicação — reinventando o TCP.
+### 6.4 Testando o protocolo sem a interface gráfica
 
-### 3.2 Entrega ordenada
-O estado do jogo é uma **sequência causal**: `ask_prompt → broadcast_question → answer_prompt → broadcast_answer`.
-Se uma resposta chegasse antes da pergunta, o cliente exibiria algo incoerente. O TCP entrega os bytes **na
-ordem em que foram enviados** (reordenação tratada pelos números de sequência), o que dispensa numeração de
-mensagens e *buffers* de reordenação na aplicação.
-
-### 3.3 Handshake de três vias e orientação a conexão
-O estabelecimento de conexão (**SYN → SYN-ACK → ACK**) cria um **canal ponto a ponto com estado**, que combina
-naturalmente com a noção de **"jogador conectado à sala"**:
-
-* o servidor sabe **exatamente quais jogadores estão presentes** (conexão aberta = jogador na sala);
-* o **encerramento** (`FIN` ou `RST`) sinaliza imediatamente que um jogador saiu — usado por `_remove_player` para
-  atualizar o lobby ou abortar a partida;
-* o *keep-alive* (`SO_KEEPALIVE`) detecta pares mortos (queda de rede).
-
-Em UDP, "presença" teria de ser inferida por *heartbeats* próprios.
-
-### 3.4 Controle de fluxo e de congestionamento
-O TCP aplica **controle de fluxo por janela deslizante** (`rwnd`): um cliente lento (terminal travado,
-máquina sobrecarregada) não é inundado com dados além do que seu *buffer* de recepção suporta. O
-**controle de congestionamento** (slow start, congestion avoidance) evita que o jogo agrave redes
-saturadas. Como o tráfego do jogo é pequeno (mensagens de dezenas a poucas centenas de bytes), o
-*overhead* do TCP é irrelevante; já a robustez é essencial.
-
-### 3.5 Fluxo de bytes (stream) e o *framing* da aplicação
-O TCP é um **fluxo de bytes sem fronteiras de mensagem**: duas mensagens enviadas em dois `send()` podem
-chegar em um único `recv()`, e uma mensagem pode chegar fragmentada. Por isso o protocolo de aplicação
-define **delimitador explícito** (uma mensagem JSON por linha, terminada em `\n`) e a leitura usa
-`readline()`, que reagrupa os bytes até encontrar o delimitador (seção 4.1).
-
-### 3.6 Por que o UDP seria inadequado aqui
-
-| Aspecto | TCP | UDP |
-|---------|-----|-----|
-| Perda de pacotes | Retransmitidos pelo transporte | Perdidos; aplicação deve tratar |
-| Ordem de entrega | Garantida | Não garantida |
-| Estado de conexão (presença do jogador) | Nativo (handshake/FIN/RST) | Inexistente |
-| Controle de fluxo/congestionamento | Nativo | Inexistente |
-| Latência | Ligeiramente maior (aceitável em jogo **por turnos**) | Menor (importa em jogos de ação em tempo real) |
-| Adequação a **jogos por turnos e votações** | ✅ Alta | ❌ Exige reimplementar o TCP |
-
-> **Conclusão:** UDP é preferível quando *latência > confiabilidade* (FPS, voz, vídeo). Em um jogo de
-> dedução por turnos, o **requisito dominante é a consistência do estado compartilhado**; a latência
-> adicional de uma retransmissão é imperceptível para quem digita uma pergunta. Logo, TCP.
-
-### 3.7 Opções de socket usadas
-
-| Opção | Motivo |
-|-------|--------|
-| `SO_REUSEADDR` (servidor) | Reiniciar o servidor imediatamente sem esperar o fim do `TIME_WAIT`. |
-| `TCP_NODELAY` (ambos) | Desativa o algoritmo de Nagle: mensagens pequenas e interativas são enviadas sem atraso. |
-| `SO_KEEPALIVE` (servidor) | Detecta conexões "mortas" (cliente que desligou a rede sem enviar `FIN`). |
-
----
-
-## 4. Protocolo da Camada de Aplicação — `IMPOSTOR/1.0`
-
-O protocolo é **textual, orientado a eventos, com estado**, sobre um fluxo TCP. A versão (`IMPOSTOR/1.0`) é
-negociada no *handshake* de aplicação (`player_join`), permitindo evoluir o protocolo sem quebrar clientes.
-
-### 4.1 Estrutura e formato das mensagens
-
-**Codificação:** JSON em **UTF-8**. **Delimitação (framing):** **uma mensagem por linha**, terminada por `\n`
-(*newline-delimited JSON*). Tamanho máximo de uma mensagem: **4096 caracteres** (acima disso, a conexão é
-encerrada para proteger o servidor).
-
-**Envelope** (idêntico nos dois sentidos):
-
-```json
-{"type": "<nome_do_evento>", "data": { ...campos específicos... }}
-```
-
-| Campo | Tipo | Obrigatório | Descrição |
-|-------|------|-------------|-----------|
-| `type` | string | sim | Nome do **evento** (seção 4.3). |
-| `data` | objeto | não (padrão `{}`) | **Carga útil** do evento. |
-
-**Exemplos reais (cada linha abaixo é uma mensagem no fio):**
-
-```json
-{"type":"player_join","data":{"name":"Ana","protocol":"IMPOSTOR/1.0"}}
-{"type":"role_assign","data":{"role":"CIVILIAN","theme":"COMIDA","word":"FEIJÃO"}}
-{"type":"role_assign","data":{"role":"IMPOSTOR","theme":"COMIDA","word":null}}
-{"type":"ask_prompt","data":{"turn":1,"step":1,"steps":3,"asker":"Caio","responders":["Ana","Bia"],"timeout":60}}
-{"type":"continue_vote_cast","data":{"voter":"Ana","choice":"continue","voters_vote":[],"voters_continue":["Ana"],"waiting":["Bia","Caio"],"received":1,"total":3}}
-{"type":"send_question","data":{"text":"Você come isso no almoço?"}}
-{"type":"send_vote","data":{"target":"Caio"}}
-{"type":"end_game","data":{"result":"DRAW","message":"...","impostor":"Caio","theme":"COMIDA","word":"FEIJÃO","guess":"feijao"}}
-```
-
-**Por que JSON delimitado por linha (e não pipes `|`)?**
-legível e depurável (`nc`/`telnet`), extensível (campos novos sem quebrar parsers), tolera texto livre dos
-jogadores (inclusive o caractere `|`, que quebraria um formato por pipes), e é suportado pela biblioteca
-padrão. O JSON escapa `\n` dentro de strings, portanto **uma quebra de linha real só ocorre como delimitador**.
-
-**Princípios do protocolo**
-
-1. **O servidor é a autoridade:** só ele decide de quem é a vez, valida entradas e calcula o resultado.
-2. **O cliente apenas envia eventos permitidos no estado atual**; o servidor rejeita os demais com `error`.
-3. **Segredos são enviados individualmente** (`role_assign` nunca é *broadcast*): o Impostor jamais recebe a palavra.
-4. **Todo evento de jogo público é retransmitido (*broadcast*)** para manter os clientes sincronizados.
-5. **Entradas não confiáveis:** nomes, tamanho de texto, alvos de voto e tipos de evento são validados no servidor.
-
-### 4.2 Estados
-
-#### 4.2.1 Estados do servidor (máquina de estados da sala)
-
-| Estado | Descrição | Eventos aceitos dos clientes |
-|--------|-----------|------------------------------|
-| `WAIT_PLAYERS` | Lobby: aceita conexões (≤ 5) e aguarda `player_ready` de todos (≥ 3). | `player_join`, `player_ready`, `ping`, `player_quit` |
-| `IN_GAME` | Turno em andamento: cada jogador pergunta a todos (um por vez) e todos respondem. | `send_question` (só do `asker`), `send_answer` (só do jogador cuja vez de responder foi anunciada), `ping`, `player_quit` |
-| `DECIDING` | **Fim do turno (todos já perguntaram):** decisão **Continuar x Votação**, com os votos exibidos **em tempo real**. | `send_continue_vote` (todos), `ping`, `player_quit` |
-| `VOTING` | Cada jogador vota em quem acredita ser o Impostor. | `send_vote` (todos), `ping`, `player_quit` |
-| `GUESSING` | Impostor descoberto tenta adivinhar a palavra (chance de empate). | `send_guess` (só do Impostor), `ping`, `player_quit` |
-| `END_GAME` | Resultado final é anunciado; em seguida volta a `WAIT_PLAYERS`. | `ping`, `player_quit` |
-
-```
-                    todos "pronto" (≥3)
- ┌────────────────┐ ────────────────────► ┌──────────┐ fim de CADA turno  ┌──────────┐
- │  WAIT_PLAYERS  │                       │ IN_GAME  │ ─────────────────► │ DECIDING │
- └────────────────┘ ◄──┐                  └──────────┘ ◄───────────────── └──────────┘
-        ▲              │                      ▲   "Continuar" (ou empate)     │ maioria absoluta
-        │ (reset +     │                      │                                  │ "Votação" (ou limite
-        │  1 segundo)  │                      └──────────────────────────────────┘  de turnos)
-        │              │                                                          ▼
- ┌──────────────┐      │  Impostor NÃO foi o mais votado          ┌─────────┐
- │   END_GAME   │ ◄────┼───────────────────────────────────────── │ VOTING  │
- └──────────────┘      │                                          └─────────┘
-        ▲              │                                               │ Impostor foi o mais votado
-        │              │          ┌──────────┐                         ▼
-        └──────────────┴───────── │ GUESSING │ ◄───────────────────────┘
-          (acertou → DRAW /       └──────────┘
-           errou → IMPOSTOR_LOSES)
-
- Em qualquer estado de jogo: Impostor desconecta ou < 3 jogadores ──► END_GAME (result = ABORTED)
-```
-
-O servidor anuncia **cada transição** com o evento `state_change`.
-
-#### 4.2.2 Estados do cliente
-
-O cliente **espelha** o estado do servidor (`state_change`) e mantém uma **ação pendente** (`pending`) que
-define o que o teclado do usuário significa naquele momento.
-
-| Estado do cliente | Significado | Entrada do teclado interpretada como… |
-|-------------------|-------------|----------------------------------------|
-| `CONNECTING` | Socket aberto, `player_join` enviado, aguardando `welcome`. | — |
-| `WAIT_PLAYERS` | No lobby. | `pronto` → `player_ready` |
-| `IN_GAME` + `pending=ask` | É a vez de **perguntar a todos**. | texto → `send_question` |
-| `IN_GAME` + `pending=answer` | É a vez de **responder**. | texto → `send_answer` |
-| `IN_GAME` + `pending=None` | Aguardando os outros jogadores. | ignorada (aviso "aguarde") |
-| `DECIDING` + `pending=continue` | Decisão coletiva (placar ao vivo na tela). | `v` (Votação) / `c` (Continuar) → `send_continue_vote` |
-| `VOTING` + `pending=vote` | Votação. | número/nome → `send_vote` |
-| `GUESSING` + `pending=guess` | (Só o Impostor descoberto) palpite. | texto → `send_guess` |
-| `END_GAME` | Resultado exibido. | — (logo volta a `WAIT_PLAYERS`) |
-| `CLOSED` | Conexão encerrada. | — |
-
-A ação pendente é **cancelada** quando chega qualquer evento "ativo" do servidor (o servidor seguiu em frente —
-por exemplo, estourou o tempo), e é **restaurada** quando o servidor responde `error/INVALID_INPUT`
-(entrada inválida, o jogador pode tentar de novo).
-
-### 4.3 Eventos
-
-#### 4.3.1 Cliente → Servidor
-
-| Evento | `data` | Estado válido | Descrição |
-|--------|--------|---------------|-----------|
-| `player_join` | `{name, protocol}` | *handshake* (1ª mensagem) | Pede entrada na sala. `protocol` deve ser `"IMPOSTOR/1.0"`. |
-| `player_ready` | `{}` | `WAIT_PLAYERS` | Marca o jogador como pronto. |
-| `send_question` | `{text}` | `IN_GAME` (turno do `asker`) | Envia a pergunta do turno, dirigida a **todos** os outros jogadores. |
-| `send_answer` | `{text}` | `IN_GAME` (vez do `responder`) | Envia a resposta à pergunta atual. Cada jogador responde uma vez por pergunta. |
-| `send_continue_vote` | `{choice}` | `DECIDING` | `choice` = `"vote"` (**Votação**) ou `"continue"` (**Continuar**). O voto é **público**: o servidor o retransmite na hora (`continue_vote_cast`). |
-| `send_vote` | `{target}` | `VOTING` | Nome do jogador em quem vota (≠ si mesmo). |
-| `send_guess` | `{word}` | `GUESSING` (só Impostor) | Palpite da palavra secreta. |
-| `ping` | `{t}` | qualquer | Medição de latência (RTT). |
-| `player_quit` | `{}` | qualquer | Saída voluntária (o cliente então fecha o socket). |
-
-#### 4.3.2 Servidor → Cliente(s)
-
-| Evento | Destino | `data` | Descrição |
-|--------|---------|--------|-----------|
-| `welcome` | 1 jogador | `{name, protocol, min_players, max_players}` | Aceite da entrada. |
-| `join_rejected` | 1 jogador | `{reason}` | Entrada recusada (sala cheia, nome duplicado, versão incompatível, partida em andamento, nome inválido). A conexão é fechada. |
-| `lobby_update` | todos | `{players:[{name,ready}], notice, min_players, max_players}` | Lista da sala; emitido a cada entrada/saída/`player_ready`. |
-| `state_change` | todos | `{state}` | Nova transição da máquina de estados. |
-| `start_game` | todos | `{players, theme, min_turns, max_turns, turn_timeout}` | A partida começou; **tema** é público. |
-| `role_assign` | **individual** | `{role, theme, word}` | `role` ∈ {`CIVILIAN`,`IMPOSTOR`}; `word` é `null` para o Impostor. |
-| `turn_start` | todos | `{turn, order}` | Início de um turno e ordem sorteada dos perguntadores (todos perguntam uma vez). |
-| `ask_prompt` | todos | `{turn, step, steps, asker, responders, timeout}` | **Convite** para `asker` fazer **uma** pergunta a **todos**; `responders` é a ordem em que os demais responderão. `step`/`steps` = posição na fila de perguntadores. |
-| `broadcast_question` | todos | `{turn, step, asker, text}` | Retransmissão da pergunta para toda a sala. |
-| `answer_prompt` | todos | `{turn, asker, responder, question, position, total, timeout}` | **Convite** para `responder` responder (é o `position`-ésimo de `total`). Enviado uma vez para cada respondente. |
-| `broadcast_answer` | todos | `{turn, asker, responder, question, text}` | Retransmissão da resposta, na hora, para toda a sala. |
-| `action_timeout` | todos | `{player, action, reason}` | Jogador não agiu (tempo/queda); esse passo é pulado e o jogo segue. |
-| `turn_end` | todos | `{turn}` | **Todos já perguntaram:** o turno acabou. |
-| `ask_continue` | todos | `{turn, options, message, timeout}` | Abre a decisão *Continuar x Votação* ao fim do turno. |
-| `continue_vote_cast` | todos | `{voter, choice, voters_vote, voters_continue, waiting, received, total}` | **Tempo real:** enviado a **cada voto** da decisão — quem votou em **Votação**, quem votou em **Continuar**, quem ainda falta. |
-| `continue_result` | todos | `{votes_vote, votes_continue, abstentions, voters_vote, voters_continue, abstained, decision}` | Resultado final (`vote` = ir à votação do impostor; `continue` = outro turno), com os nomes de cada lado. |
-| `start_vote` | todos | `{candidates, timeout}` | Abre a votação. |
-| `vote_progress` | todos | `{received, total}` | Progresso (sem revelar votos). |
-| `vote_result` | todos | `{ballot, tally, accused, tie, impostor_caught}` | Apuração pública. |
-| `request_guess` | todos | `{impostor, theme, timeout}` | O Impostor descoberto deve palpitar. |
-| `guess_result` | todos | `{impostor, guess, correct}` | Resultado do palpite. |
-| `end_game` | todos | `{result, message, impostor, theme, word, [guess]}` | Fim; revela Impostor e palavra. `result` ∈ {`IMPOSTOR_WINS`, `IMPOSTOR_LOSES`, `DRAW`, `ABORTED`}. |
-| `info` | todos | `{message}` | Avisos (ex.: jogador desconectou). |
-| `pong` | 1 jogador | `{t}` | Resposta ao `ping`. |
-| `error` | 1 jogador | `{code, message}` | Erro de protocolo/validação (tabela abaixo). |
-
-#### 4.3.3 Códigos de erro (`error.code`)
-
-| Código | Causa | Efeito |
-|--------|-------|--------|
-| `BAD_MESSAGE` | Linha não é JSON válido / falta `type` / `data` não é objeto. | Mensagem ignorada; conexão mantida. |
-| `INVALID_STATE` | Evento não permitido no estado atual (ex.: `send_vote` no lobby). | Ignorado. |
-| `NOT_YOUR_TURN` | Jogador agiu fora da vez (ou duas vezes). | Ignorado — **é assim que o servidor impõe a ordem dos turnos**. |
-| `UNEXPECTED_EVENT` | A vez é do jogador, mas o evento é de outro tipo. | Ignorado; o servidor continua esperando o evento certo. |
-| `INVALID_INPUT` | Conteúdo inválido (texto vazio, voto em si mesmo, jogador inexistente, `choice` inválido). | O jogador **pode tentar de novo** dentro do prazo. |
-
-### 4.4 Fluxo de mensagens entre as partes comunicantes
-
-Legenda: `C1..C3` = clientes (C2 será o Impostor neste exemplo), `S` = servidor.
-`►` = enviado do remetente ao destino; `►►` = *broadcast* para todos.
-
-#### 4.4.1 Conexão e lobby
-
-```
- C1            C2            C3                         S
- │ ── TCP SYN/SYN-ACK/ACK (handshake de transporte) ───►│
- │ ── player_join {name:"Ana", protocol:"IMPOSTOR/1.0"} ►│  valida versão, nome, lotação, estado
- │ ◄──────────── welcome ────────────────────────────── │
- │ ◄──────────── lobby_update (Ana) ──────────────────── │  ►► todos
- │      (C2 e C3 repetem o mesmo procedimento)           │
- │ ── player_ready ─────────────────────────────────────►│
- │ ◄──────────── lobby_update (Ana PRONTO) ───────────── │  ►►
- │              ...  C2 e C3 enviam player_ready ...      │
- │                                                        │  ≥3 jogadores e todos prontos ⇒ inicia
-```
-
-#### 4.4.2 Início da partida e um turno completo
-
-```
- S: sorteia tema, palavra e Impostor (C2)
- │ ◄── state_change {IN_GAME} ───────────────────────────  ►►
- │ ◄── start_game {players, theme:"COMIDA", ...} ───────── ►►
- │ ◄── role_assign {CIVILIAN, COMIDA, "FEIJÃO"} ───────── C1 (individual)
- │                  role_assign {IMPOSTOR, COMIDA, null} ► C2 (individual)
- │ ◄── role_assign {CIVILIAN, COMIDA, "FEIJÃO"} ───────── C3 (individual)
- │ ◄── turn_start {turn:1, order:[C3,C1,C2]} ───────────── ►►    (todos vão perguntar, nesta ordem)
-
- ── Pergunta 1/3: C3 pergunta a TODOS (respondem C1 e depois C2, ordem sorteada) ──
- │ ◄── ask_prompt {turn:1, step:1, steps:3, asker:C3, responders:[C1,C2]} ►►
- │                                    C3 ── send_question {text} ──► S
- │      (se C1 ou C2 enviassem algo agora: S ► error NOT_YOUR_TURN)
- │ ◄── broadcast_question {C3, text} ───────────────────── ►►
- │ ◄── answer_prompt {responder:C1, position:1, total:2} ─ ►►
- │ C1 ── send_answer {text} ───────────────────────────────► S
- │ ◄── broadcast_answer {C1, text} ─────────────────────── ►►
- │ ◄── answer_prompt {responder:C2, position:2, total:2} ─ ►►
- │ C2 ── send_answer {text} ───────────────────────────────► S
- │ ◄── broadcast_answer {C2, text} ─────────────────────── ►►    (C2 já viu a resposta de C1)
-
- ── Pergunta 2/3: C1 pergunta a todos ... (idem) ──
- ── Pergunta 3/3: C2 pergunta a todos ... (idem) ──
- │ ◄── turn_end {turn:1} ───────────────────────────────── ►►    (todos já perguntaram: fim do turno)
-```
-
-#### 4.4.3 Decisão ao fim de cada turno (ao vivo), votação do impostor e resolução
-
-```
- (ao fim de CADA turno, a partir de --min-turns)
- │ ◄── state_change {DECIDING} ─────────────────────────── ►►
- │ ◄── ask_continue {turn:1, "Continuar (outro turno) ou Votação do impostor?"} ►►
- │ C1 ── send_continue_vote {choice:"continue"} ──────────► S
- │ ◄── continue_vote_cast {voter:C1, voters_vote:[], voters_continue:[C1], waiting:[C2,C3]} ►►   ← TEMPO REAL
- │ C3 ── send_continue_vote {choice:"vote"} ──────────────► S
- │ ◄── continue_vote_cast {voter:C3, voters_vote:[C3], voters_continue:[C1], waiting:[C2]} ►►   ← TEMPO REAL
- │ C2 ── send_continue_vote {choice:"vote"} ──────────────► S
- │ ◄── continue_vote_cast {voter:C2, voters_vote:[C3,C2], voters_continue:[C1], waiting:[]} ►►
- │ ◄── continue_result {votes_vote:2, votes_continue:1, voters_vote:[C3,C2], voters_continue:[C1], decision:"vote"} ►►
- │        └─ decision="continue" ⇒ state_change {IN_GAME} e começa o turno 2 (volta ao 4.4.2)
-
- │ ◄── state_change {VOTING} ───────────────────────────── ►►
- │ ◄── start_vote {candidates:[C1,C2,C3]} ──────────────── ►►
- │ C1 ── send_vote {target:C2} ───────────────────────────► S
- │ ◄── vote_progress {1/3} ─────────────────────────────── ►►   (não revela quem votou em quem)
- │ C2 ── send_vote {target:C1} ─►  C3 ── send_vote {target:C2} ─► S
- │ ◄── vote_result {ballot, tally:{C2:2,C1:1}, accused:C2, impostor_caught:true} ►►
-
- ┌── CASO A: acusado ≠ Impostor (ou empate) ───────────────────────────────────────┐
- │ ◄── state_change {END_GAME}                                                      │
- │ ◄── end_game {result:"IMPOSTOR_WINS", impostor, word}                      ►►    │
- └──────────────────────────────────────────────────────────────────────────────────┘
- ┌── CASO B: acusado = Impostor (como no exemplo) ──────────────────────────────────┐
- │ ◄── state_change {GUESSING}                                                ►►    │
- │ ◄── request_guess {impostor:C2, theme}                                     ►►    │
- │ C2 ── send_guess {word:"feijao"} ───────────────────────────────────────────► S  │
- │ ◄── guess_result {guess:"feijao", correct:true}                            ►►    │
- │ ◄── end_game {result:"DRAW" (acertou) | "IMPOSTOR_LOSES" (errou)}          ►►    │
- └──────────────────────────────────────────────────────────────────────────────────┘
- │ ◄── state_change {WAIT_PLAYERS} + lobby_update {"Nova partida..."} ──── ►►
-```
-
-#### 4.4.4 Situações excepcionais
-
-```
- Entrada recusada:   C ── player_join ──► S ── join_rejected {reason} ──► C   (S fecha o socket)
- Tempo esgotado:     S ►► action_timeout {player, action, reason:"timeout"}  → esse passo é pulado
- Queda de jogador:   (FIN/RST) S ►► info {"X desconectou-se."}
-                       • no lobby          → lobby_update
-                       • no jogo, Impostor caiu ou restam < 3 jogadores
-                                           → end_game {result:"ABORTED"}
-                       • no jogo, caso contrário → os passos do jogador são pulados
- Mensagem inválida:  C ── "lixo" ──► S ── error {BAD_MESSAGE} ──► C           (conexão mantida)
- Latência:           C ── ping {t} ──► S ── pong {t} ──► C   (RTT = agora − t)
-```
-
----
-
-## 5. Arquitetura e Concorrência
-
-```
-                        ┌──────────────────────────────── SERVIDOR (server.py) ───────────────────────────────┐
- Cliente 1 ──TCP──►  [thread handle_client 1] ─┐                                                              │
- Cliente 2 ──TCP──►  [thread handle_client 2] ─┼─► eventos de jogo ─► queue.Queue ─► [thread da PARTIDA]      │
- Cliente 3 ──TCP──►  [thread handle_client 3] ─┘   (lobby tratado         (árbitro: máquina de estados,        │
- Cliente N ──TCP──►  [thread handle_client N]       na própria thread)     turnos, apuração, broadcast)  ──► sockets
-                        │   thread principal: accept() em loop                                                 │
-                        └────────────────────────────────────────────────────────────────────────────────────┘
-```
-
-* **Thread principal:** `accept()` em laço; para cada conexão, cria uma **thread por cliente**.
-* **Thread por cliente (`handle_client`):** faz o *handshake*, lê mensagens (`readline`), responde `ping`, trata o lobby
-  (`player_ready`) e **entrega os eventos de jogo à fila** da partida. É também quem detecta quedas (EOF).
-* **Thread da partida (`_run_game`):** único "árbitro". Consome a fila e **só aceita o evento esperado do jogador esperado**
-  (`_collect`). Isso elimina condições de corrida na lógica do jogo e torna a ordem dos turnos **imposta pelo servidor**.
-* **Sincronização:** `threading.RLock` protege `players`/`state`; cada `Player` possui um `Lock` de envio para que duas
-  threads nunca intercalem bytes de duas mensagens no mesmo socket; `queue.Queue` é *thread-safe*.
-* **Timeouts:** cada espera usa `queue.get(timeout=…)` com prazo (`time.monotonic`), de modo que um jogador ausente nunca
-  trava os demais.
-* **Cliente:** 2 threads — **recepção** (imprime atualizações assim que chegam, de forma assíncrona) e **principal**
-  (teclado), cooperando por `state`/`pending` protegidos por `Lock`.
-
----
-
-## 6. Testes realizados
-
-Executados em Python 3.12 (Linux), com servidor e clientes via `localhost`. Parte dos testes usou o `client.py` real
-controlado por um script; outra parte usou clientes descartáveis que falam o protocolo diretamente por *sockets*
-(scripts de teste, não incluídos na entrega).
-
-| Teste | Resultado |
-|-------|-----------|
-| 4 instâncias reais do `client.py`: turno 1 → "Continuar", turno 2 → "Votação" | ✅ 2 turnos completos: 8 perguntas (cada jogador pergunta 1 vez por turno) e 24 respostas (cada pergunta respondida pelos 3 outros, um por vez) |
-| Decisão **em tempo real** | ✅ na tela de um dos clientes apareceram os 8 votos (2 decisões × 4 jogadores), um a um, cada um com o placar parcial (quem votou em Votação, em Continuar e quem falta) |
-| 7 partidas seguidas (volta ao lobby e revanche), votos aleatórios | ✅ exatamente 2 decisões por partida (após os turnos 1 e 2) |
-| Impostor descoberto + palpite **errado** | ✅ `IMPOSTOR_LOSES` |
-| Impostor descoberto + palpite **certo** (5 jogadores) | ✅ `DRAW` |
-| Impostor não descoberto / empate na votação | ✅ `IMPOSTOR_WINS` |
-| `--max-turns 2` com todos escolhendo "Continuar" | ✅ após o turno 2 a votação do impostor é forçada, sem nova decisão |
-| `--min-turns 2` | ✅ nenhuma decisão após o turno 1; a 1ª só aparece após o turno 2 |
-| Jogador que **não responde** (prazo de 2 s) | ✅ `action_timeout`, o passo é pulado e a partida termina normalmente |
-| **Queda de jogador comum** na hora de responder | ✅ `action_timeout (disconnected)`, partida continua com os demais |
-| **Queda do Impostor** | ✅ `end_game` com `ABORTED` |
-| 6º jogador recusado | ✅ `join_rejected` ("Sala cheia (5/5)") |
-| Nome duplicado, nome inválido, versão de protocolo incompatível, 1ª mensagem inválida | ✅ `join_rejected` |
-| JSON inválido após entrar / evento fora do estado | ✅ `error BAD_MESSAGE` / `INVALID_STATE`, conexão mantida |
-
-**Roteiro manual** para reproduzir (3 a 5 terminais): suba o servidor com `python3 server.py`, entre com
-um `client.py` por terminal, digite `pronto` em todos e acompanhe o fluxo. Para testar o *timeout*, use
-`--turn-timeout 5` e deixe um jogador sem responder; para testar a queda, feche o terminal de um jogador no meio da vez.
-
-Exemplo ilustrativo de sessão manual com `netcat` (o protocolo é textual, legível e independente do cliente):
+Como o protocolo é texto (JSON por linha), o servidor pode ser testado com `nc`/`telnet`, sem `client.py`. O campo `skin` é opcional:
 
 ```bash
-$ nc 127.0.0.1 5000
+nc 127.0.0.1 5000
 {"type":"player_join","data":{"name":"Teste","protocol":"IMPOSTOR/1.0"}}
-{"type": "welcome", "data": {"name": "Teste", "protocol": "IMPOSTOR/1.0", "min_players": 3, "max_players": 5}}
-{"type": "lobby_update", "data": {"players": [{"name": "Teste", "ready": false}], "notice": "Teste entrou na sala.", ...}}
+{"type":"player_ready","data":{}}
+{"type":"ping","data":{"t":1}}
+```
+
+Mensagens inválidas retornam `error` (ex.: `BAD_MESSAGE`) e uma versão de protocolo errada retorna `join_rejected`. O log do servidor (`INFO`) mostra conexões, mudanças de estado e o resultado de cada partida.
+
+---
+
+## 7. Protocolo de camada de aplicação — IMPOSTOR/1.0
+
+### 7.1 Visão geral
+
+| Item | Definição |
+|---|---|
+| **Transporte** | TCP, uma conexão por jogador, mantida aberta durante toda a sessão |
+| **Modelo** | Cliente-servidor. O cliente envia *intenções*; o servidor valida, decide e retransmite *eventos* |
+| **Codificação** | JSON em **UTF-8** |
+| **Framing** | **Uma mensagem por linha**, delimitada por `\n` |
+| **Formato** | `{"type": "<evento>", "data": { ... }}` — `type` é obrigatório (string); `data` é um objeto (pode ser omitido, equivale a `{}`) |
+| **Versão** | `IMPOSTOR/1.0`, declarada no `player_join`; versão diferente é recusada |
+| **Tamanho máximo** | 4096 caracteres por mensagem (excedeu → o servidor encerra a conexão) |
+| **Limites de campo** | Nome: `^[\w\-]{1,15}$` · texto de pergunta/resposta/palpite: até 200 caracteres (excesso é truncado) · skin: até 40 caracteres |
+| **Sala** | Uma única sala por servidor: mínimo **3**, máximo **5** jogadores |
+| **Papéis** | `CIVILIAN` (conhece a palavra) e `IMPOSTOR` (só conhece o tema) |
+
+**Tipos de entrega**
+- **Unicast** — só para um jogador (`welcome`, `join_rejected`, `role_assign`, `error`, `pong`, `skins_taken`).
+- **Broadcast** — para todos da sala (todos os demais eventos).
+
+**Privacidade das informações.** A palavra só é enviada aos civis (`role_assign` individual; o impostor recebe `word: null`). Os votos de "Votação do impostor" **não** são revelados durante a coleta (`vote_progress` só informa contagem) — apenas em `vote_result`. Já os votos "Continuar × Votação" são **públicos e ao vivo** (`continue_vote_cast`).
+
+### 7.2 Máquina de estados do servidor
+
+```mermaid
+stateDiagram-v2
+    [*] --> WAIT_PLAYERS
+    WAIT_PLAYERS --> IN_GAME: 3 a 5 jogadores e todos prontos
+    IN_GAME --> DECIDING: turno completo (turno entre min e max)
+    DECIDING --> IN_GAME: decisao igual a continuar
+    DECIDING --> VOTING: decisao igual a votar
+    IN_GAME --> VOTING: limite de turnos atingido
+    VOTING --> GUESSING: impostor foi o mais votado
+    VOTING --> END_GAME: inocente acusado ou empate
+    GUESSING --> END_GAME: palpite recebido ou tempo esgotado
+    END_GAME --> WAIT_PLAYERS: apos 1 s
+```
+
+| Estado | Significado | Eventos do cliente aceitos |
+|---|---|---|
+| `WAIT_PLAYERS` | Lobby: aguardando jogadores e "pronto" | `player_ready`, `player_quit`, `ping` |
+| `IN_GAME` | Turno: perguntas e respostas, uma pessoa por vez | `send_question` (só o perguntador da vez), `send_answer` (só o respondedor da vez) |
+| `DECIDING` | Fim de cada turno: *Continuar* ou *Votação* | `send_continue_vote` (todos) |
+| `VOTING` | Votação do impostor | `send_vote` (todos) |
+| `GUESSING` | Impostor descoberto tenta adivinhar a palavra | `send_guess` (só o impostor) |
+| `END_GAME` | Resultado final | — (sala volta ao lobby em seguida) |
+
+**Transições do servidor**
+
+| De → Para | Gatilho | Mensagens emitidas |
+|---|---|---|
+| `WAIT_PLAYERS` → `IN_GAME` | 3 a 5 jogadores, todos com `player_ready` | `state_change`, `start_game`, `role_assign` (um por jogador), `turn_start` |
+| `IN_GAME` → `DECIDING` | Todos já perguntaram e `turno >= min-turns` e `turno < max-turns` | `turn_end`, `state_change`, `ask_continue` |
+| `DECIDING` → `IN_GAME` | Maioria absoluta **não** pediu votação | `continue_result` (`decision: continue`), `state_change`, `turn_start` |
+| `DECIDING` → `VOTING` | Mais da metade dos presentes votou `vote` | `continue_result` (`decision: vote`), `state_change`, `start_vote` |
+| `IN_GAME` → `VOTING` | `turno >= max-turns` | `turn_end`, `info` (limite atingido), `state_change`, `start_vote` |
+| `VOTING` → `GUESSING` | Mais votado, isolado, é o Impostor | `vote_result`, `state_change`, `request_guess` |
+| `VOTING` → `END_GAME` | Inocente acusado, empate ou nenhum voto | `vote_result`, `state_change`, `end_game` |
+| `GUESSING` → `END_GAME` | Palpite recebido ou tempo esgotado | `guess_result`, `state_change`, `end_game` |
+| `END_GAME` → `WAIT_PLAYERS` | 1 s depois do fim | `state_change`, `lobby_update` |
+
+Em qualquer estado de jogo, `player_quit`/queda de conexão e `ping` são tratados. Se **o impostor se desconecta** ou **restam menos de 3 jogadores**, a partida é **abortada** (`end_game` com `result: "ABORTED"`) e a sala volta ao lobby.
+
+Cada mudança de estado é anunciada a todos por `state_change`.
+
+### 7.3 Estados do cliente
+
+```mermaid
+stateDiagram-v2
+    [*] --> LOGIN
+    LOGIN --> CONECTANDO: ENTRAR NA SALA (envia player_join)
+    CONECTANDO --> LOBBY: welcome
+    CONECTANDO --> LOGIN: join_rejected ou conexao fechada
+    LOBBY --> EM_JOGO: start_game
+    EM_JOGO --> FIM: end_game
+    FIM --> LOBBY: JOGAR DE NOVO (marca pronto automaticamente)
+    FIM --> [*]: SAIR (envia player_quit e fecha o programa)
+    LOBBY --> LOGIN: conexao perdida
+    EM_JOGO --> LOGIN: conexao perdida
+```
+
+Dentro de `EM_JOGO` o cliente fica "pendente" de uma ação do jogador quando recebe um *prompt* do servidor: `ask` (pergunta), `answer` (resposta), `continue` (Continuar/Votação), `vote` (voto) ou `guess` (palpite), cada uma com contagem regressiva do `timeout` informado.
+
+### 7.4 Catálogo de mensagens
+
+#### Cliente → Servidor
+
+| `type` | `data` | Quando | Validação / efeito |
+|---|---|---|---|
+| `skins_query` | `{}` | Só como 1ª mensagem (consulta da tela de login) | Servidor responde `skins_taken` e **fecha** a conexão, sem entrar na sala |
+| `player_join` | `{name, protocol, skin?}` | 1ª mensagem obrigatória (handshake) | Versão, nome, sala, estado e skin são checados (ver 7.6) |
+| `player_ready` | `{}` | No lobby | Marca o jogador como pronto; pode iniciar a partida |
+| `player_quit` | `{}` | A qualquer momento | Servidor encerra a conexão e remove o jogador |
+| `ping` | `{t}` | A qualquer momento | Servidor responde `pong` com o mesmo `t` |
+| `send_question` | `{text}` | Após `ask_prompt` com `asker` = você | Texto não vazio (≤ 200) |
+| `send_answer` | `{text}` | Após `answer_prompt` com `responder` = você | Texto não vazio (≤ 200) |
+| `send_continue_vote` | `{choice}` | Após `ask_continue` | `choice` ∈ {`"vote"`, `"continue"`} |
+| `send_vote` | `{target}` | Após `start_vote` | `target` = jogador existente, diferente de si mesmo (sem diferenciar maiúsculas) |
+| `send_guess` | `{word}` | Após `request_guess` (só o impostor) | Texto não vazio (≤ 200) |
+
+#### Servidor → Cliente
+
+| `type` | Entrega | `data` | Descrição |
+|---|---|---|---|
+| `skins_taken` | unicast | `{skins: [..]}` | Skins em uso (resposta ao `skins_query`) |
+| `welcome` | unicast | `{name, protocol, min_players, max_players, skin}` | Entrada aceita |
+| `join_rejected` | unicast | `{reason}` | Entrada recusada; conexão é fechada |
+| `lobby_update` | broadcast | `{players: [{name, ready, skin}], notice, min_players, max_players}` | Estado do lobby |
+| `state_change` | broadcast | `{state}` | Mudança de estado do servidor |
+| `start_game` | broadcast | `{players, skins, theme, min_turns, max_turns, turn_timeout}` | Partida iniciada |
+| `role_assign` | **unicast** | `{role, theme, word}` | `word` é `null` para o `IMPOSTOR` |
+| `turn_start` | broadcast | `{turn, order}` | Início de turno e ordem dos perguntadores |
+| `ask_prompt` | broadcast | `{turn, step, steps, asker, responders, timeout}` | Vez de `asker` perguntar |
+| `broadcast_question` | broadcast | `{turn, step, asker, text}` | Pergunta retransmitida |
+| `answer_prompt` | broadcast | `{turn, asker, responder, question, position, total, timeout}` | Vez de `responder` responder |
+| `broadcast_answer` | broadcast | `{turn, asker, responder, question, text}` | Resposta retransmitida |
+| `action_timeout` | broadcast | `{player, action, reason}` | Jogador não agiu; `action` ∈ {`pergunta`, `resposta`}; `reason` ∈ {`timeout`, `disconnected`} |
+| `turn_end` | broadcast | `{turn}` | Todos já perguntaram |
+| `ask_continue` | broadcast | `{turn, options, message, timeout}` | Abre a decisão Continuar × Votação |
+| `continue_vote_cast` | broadcast | `{voter, choice, voters_vote, voters_continue, waiting, received, total}` | Voto parcial, público e ao vivo |
+| `continue_result` | broadcast | `{votes_vote, votes_continue, abstentions, voters_vote, voters_continue, abstained, decision}` | `decision` ∈ {`vote`, `continue`} |
+| `start_vote` | broadcast | `{candidates, timeout}` | Abre a votação do impostor |
+| `vote_progress` | broadcast | `{received, total}` | Progresso **sem** revelar votos |
+| `vote_result` | broadcast | `{ballot, tally, accused, tie, impostor_caught}` | Apuração (`ballot`: quem votou em quem) |
+| `request_guess` | broadcast | `{impostor, theme, timeout}` | Impostor descoberto deve palpitar |
+| `guess_result` | broadcast | `{impostor, guess, correct}` | Resultado do palpite |
+| `end_game` | broadcast | `{result, message, impostor, theme, word, guess?}` | Fim; `result` ∈ {`IMPOSTOR_WINS`, `IMPOSTOR_LOSES`, `DRAW`, `ABORTED`} |
+| `info` | broadcast | `{message}` | Aviso informativo (ex.: jogador desconectou-se) |
+| `error` | unicast | `{code, message}` | Erro recuperável (ver 7.6) |
+| `pong` | unicast | `{t}` | Resposta ao `ping` |
+
+### 7.5 Fluxos de mensagens
+
+#### a) Conexão e lobby
+
+```mermaid
+sequenceDiagram
+    participant C as Cliente
+    participant S as Servidor
+    C->>S: TCP connect
+    C->>S: player_join (name, protocol, skin)
+    alt aceito
+        S-->>C: welcome
+        S-->>C: lobby_update (broadcast)
+        C->>S: player_ready
+        S-->>C: lobby_update (broadcast)
+        Note over S: 3 a 5 jogadores e todos prontos, inicia a partida
+    else recusado
+        S-->>C: join_rejected (reason)
+        S--xC: fecha a conexao
+    end
+```
+
+#### b) Um turno (para cada perguntador)
+
+```mermaid
+sequenceDiagram
+    participant P as Perguntador
+    participant S as Servidor
+    participant R as Respondedor (um por vez)
+    S-->>P: ask_prompt (broadcast, com timeout)
+    P->>S: send_question (text)
+    S-->>R: broadcast_question
+    loop para cada respondedor, em ordem sorteada
+        S-->>R: answer_prompt (broadcast, com timeout)
+        R->>S: send_answer (text)
+        S-->>R: broadcast_answer (todos veem)
+    end
+    Note over S: quando todos ja perguntaram, envia turn_end
+```
+
+#### c) Decisão, votação e palpite
+
+```mermaid
+sequenceDiagram
+    participant J as Jogadores
+    participant S as Servidor
+    S-->>J: turn_end, state_change DECIDING, ask_continue
+    J->>S: send_continue_vote (vote ou continue)
+    S-->>J: continue_vote_cast (a cada voto)
+    S-->>J: continue_result
+    alt decisao igual a continue
+        Note over S: volta ao proximo turno
+    else decisao igual a vote
+        S-->>J: state_change VOTING, start_vote
+        J->>S: send_vote (target)
+        S-->>J: vote_progress (a cada voto)
+        S-->>J: vote_result
+        opt impostor foi o mais votado
+            S-->>J: state_change GUESSING, request_guess
+            J->>S: send_guess (word) - so o impostor
+            S-->>J: guess_result
+        end
+    end
+    S-->>J: state_change END_GAME, end_game
+    S-->>J: state_change WAIT_PLAYERS, lobby_update
+```
+
+**Regras de decisão**
+- *Continuar × Votação:* vai para a votação se `votos_vote > jogadores_presentes / 2`. Empate ou abstenção → outro turno. Se `turno >= max-turns`, a decisão é pulada e a votação é obrigatória. `--min-turns` define a partir de qual turno a decisão passa a ser aberta.
+- *Votação do impostor:* vence o mais votado **isolado**. Empate ou ausência de votos → ninguém acusado → **Impostor vence**.
+- *Palpite:* comparado com a palavra após normalização (sem acentos, minúsculas, espaços colapsados). Acertou → `DRAW`; errou ou não respondeu → `IMPOSTOR_LOSES`.
+
+### 7.6 Erros, recusas e códigos
+
+**Recusa no handshake (`join_rejected`)** — a conexão é fechada logo após:
+
+| Motivo |
+|---|
+| 1ª mensagem não é um `player_join` válido (JSON inválido, sem `type`, tipo diferente) |
+| Versão de protocolo incompatível (esperado `IMPOSTOR/1.0`) |
+| Nome inválido (fora de `^[\w\-]{1,15}$`) |
+| Há uma partida em andamento |
+| Sala cheia (5/5) |
+| Já existe jogador com esse nome (sem diferenciar maiúsculas) |
+| A skin escolhida já está em uso |
+
+**Erros durante a sessão (`error`)** — a conexão permanece aberta:
+
+| `code` | Quando |
+|---|---|
+| `BAD_MESSAGE` | Linha vazia, JSON inválido, `type` ausente ou `data` que não é objeto |
+| `INVALID_STATE` | Evento de jogo enviado no lobby, ou `player_ready` com a partida em andamento |
+| `NOT_YOUR_TURN` | Ação de quem não é o jogador da vez (ou que já agiu) — é assim que o servidor **impõe a ordem dos turnos** |
+| `UNEXPECTED_EVENT` | Evento diferente do que o servidor aguarda no momento |
+| `INVALID_INPUT` | Texto vazio, `choice` inválida, voto em jogador inexistente ou em si mesmo (o cliente pode tentar de novo dentro do prazo) |
+
+### 7.7 Timeouts e desconexões
+
+| Situação | Comportamento |
+|---|---|
+| Cliente não envia `player_join` em **30 s** | Conexão encerrada |
+| Jogador não age no prazo (`turn_timeout` / `vote_timeout`) | `action_timeout` e o passo é pulado (pergunta/resposta); abstenção na decisão e na votação; sem palpite, o Impostor perde |
+| Desconexão no lobby | Jogador removido; `lobby_update`; pode iniciar a partida se os restantes já estavam prontos |
+| Desconexão durante a partida | `info` ("… desconectou-se."); ele é pulado nas próximas etapas |
+| Impostor desconecta ou restam < 3 jogadores | Partida **abortada** (`end_game` com `ABORTED`) |
+| Mensagem > 4096 caracteres | Conexão encerrada |
+| Pares mortos | `SO_KEEPALIVE` ativado no servidor |
+
+### 7.8 Exemplo de sessão (trecho)
+
+```jsonc
+// Cliente → Servidor
+{"type":"player_join","data":{"name":"Ana","protocol":"IMPOSTOR/1.0","skin":"gato"}}
+// Servidor → Cliente
+{"type":"welcome","data":{"name":"Ana","protocol":"IMPOSTOR/1.0","min_players":3,"max_players":5,"skin":"gato"}}
+{"type":"lobby_update","data":{"players":[{"name":"Ana","ready":false,"skin":"gato"}],"notice":"Ana entrou na sala.","min_players":3,"max_players":5}}
+// Cliente → Servidor
+{"type":"player_ready","data":{}}
+
+// ... partida inicia ...
+{"type":"role_assign","data":{"role":"CIVILIAN","theme":"LUGARES","word":"HOGWARTS"}}   // só para civis
+{"type":"role_assign","data":{"role":"IMPOSTOR","theme":"LUGARES","word":null}}          // só para o impostor
+
+{"type":"ask_prompt","data":{"turn":1,"step":1,"steps":3,"asker":"Ana","responders":["Bia","Caio"],"timeout":60}}
+// Ana → Servidor
+{"type":"send_question","data":{"text":"Esse lugar tem muita gente?"}}
+{"type":"broadcast_question","data":{"turn":1,"step":1,"asker":"Ana","text":"Esse lugar tem muita gente?"}}
+
+// Ação fora de hora
+// Bia → Servidor (não era a vez dela)
+{"type":"send_question","data":{"text":"oi"}}
+// Servidor → Bia
+{"type":"error","data":{"code":"NOT_YOUR_TURN","message":"Não é a sua vez de agir (ou você já agiu)."}}
 ```
 
 ---
 
-## 7. Decisões de projeto e diferenciais
+## 8. Estrutura do repositório
 
-* **Protocolo próprio, versionado e documentado** (`IMPOSTOR/1.0`), com máquina de estados explícita no servidor **e** no
-  cliente, e códigos de erro padronizados.
-* **Servidor autoritativo:** o cliente não decide nada; mesmo um cliente modificado/malicioso não consegue agir fora de
-  vez (`NOT_YOUR_TURN`), votar em si mesmo ou ver a palavra do Impostor (o segredo nem é enviado).
-* **Pergunta para todos, respostas em sequência e públicas:** o servidor mantém uma fila embaralhada de perguntadores e
-  conduz cada respondente, um por vez, retransmitindo cada resposta na hora.
-* **Decisão coletiva a cada turno, pública e em tempo real** (*Continuar x Votação*): o grupo controla o ritmo do jogo, e o
-  servidor retransmite **cada voto no momento em que acontece** (`continue_vote_cast`), com placar parcial e lista de quem
-  ainda falta. `--min-turns`/`--max-turns` definem os limites; maioria absoluta é exigida para ir à votação (empate = Continuar).
-* **Votação final do impostor secreta**, com progresso público (`vote_progress`) e **revelação simultânea** (`vote_result`) —
-  o contraste com a decisão *Continuar x Votação* (pública e ao vivo) é proposital.
-* **Robustez:** timeouts em todas as esperas, tratamento de queda de jogador, `ABORTED` seguro, limite de tamanho de mensagem,
-  validação de nome/entradas, descarte de mensagens atrasadas (`_drain`).
-* **Revanche sem reconectar:** a sala volta ao lobby ao final da partida.
-* **Observabilidade:** *log* com horário no servidor; `/ping` no cliente mede o RTT real da conexão TCP.
-* **Banco de temas** inclui um tema de **Redes** (`SOCKET`, `FIREWALL`, `PROTOCOLO`, …) alinhado à disciplina.
-* **Somente biblioteca padrão**, sem dependências externas.
+```
+.
+├── server.py        # servidor TCP (árbitro do jogo)
+├── client.py        # cliente gráfico (Tkinter + Pillow)
+├── Images/          # ícones das skins (nome do arquivo = nome da skin)
+├── background/      # imagem de fundo da sala
+└── README.md        # esta documentação
+```
 
 ---
 
-## 8. Limitações conhecidas e trabalhos futuros
+## 9. Originalidade e diferenciais
 
-* **Sem criptografia:** o tráfego é texto puro. Em produção, usar **TLS** (`ssl.SSLContext.wrap_socket`) sobre o mesmo
-  protocolo.
-* **Sem autenticação:** o nome do jogador é apenas um apelido.
-* **Envio síncrono:** um cliente com *buffer* de recepção cheio por tempo muito longo poderia atrasar um *broadcast*.
-  Melhoria: fila de saída + thread escritora por jogador.
-* **Uma única sala por servidor.** Melhoria: múltiplas salas/lobbies simultâneos.
-* **Interface de terminal:** uma GUI (Tkinter) ou web (WebSocket) poderia reutilizar o mesmo protocolo.
-* **Reconexão** de jogadores no meio da partida não é suportada (a queda é tratada, mas não há "retorno").
+- **Jogo de dedução social em rede**, com informação assimétrica: a palavra é enviada só aos civis (`role_assign` individual) e o Impostor recebe `word: null`.
+- **Servidor como árbitro único:** uma thread de partida consome uma fila de eventos, o que impõe a ordem dos turnos e rejeita ações fora de hora com `NOT_YOUR_TURN`.
+- **Decisão coletiva ao vivo** ao fim de cada turno (*Continuar × Votação*), com votos públicos em tempo real (`continue_vote_cast`) e regra de maioria absoluta, enquanto a votação do Impostor é secreta até a apuração.
+- **Chance de empate** para o Impostor descoberto, com comparação de palpite insensível a acentos, caixa e espaços.
+- **Escolha de *skin* com disponibilidade em tempo real:** a tela de login consulta o servidor (`skins_query`/`skins_taken`) sem entrar na sala e bloqueia as skins já usadas.
+- **Tolerância a falhas:** *timeouts* por ação, abstenção automática, tratamento de desconexão no meio da partida e aborto controlado (`ABORTED`).
+- **Conteúdo próprio:** 10 temas com mais de 280 palavras, com referências de cultura pop e memes brasileiros.
+- **Interface gráfica própria** (Tkinter + Pillow) com sala em tela escalável, balões de fala, histórico e regras embutidas.
 
 ---
 
-## 9. Estrutura do repositório
+## 10. Limitações conhecidas
 
-```
-impostor/
-├── server.py      # Servidor: sockets TCP, 1 thread por cliente, árbitro da partida, máquina de estados
-├── client.py      # Cliente de terminal: thread de recepção + entrada do usuário
-└── readme.md      # Este documento
-```
+- **Sem criptografia nem autenticação:** os dados trafegam em texto claro sobre TCP; qualquer pessoa que alcance a porta pode entrar na sala (se houver vaga). Pensado para uso em rede local/educacional. Uma evolução natural seria TLS (`ssl.wrap_socket`).
+- **Uma única sala por servidor** e **sem reconexão:** quem cai sai da partida (e, se for o impostor, a partida é abortada).
+- A mensagem `ping`/`pong` está implementada no servidor para medição de latência, mas a interface gráfica atual não a utiliza.
+- O envio é bloqueante (`sendall`): um cliente com a rede muito lenta pode atrasar brevemente as retransmissões.
+
+---
+
+## Equipe
+
+| Nome | Responsabilidade |
+|---|---|
+| _Nome 1_ | _ex.: servidor e protocolo_ |
+| _Nome 2_ | _ex.: cliente gráfico_ |
+| _Nome 3_ | _ex.: documentação e testes_ |

@@ -281,8 +281,10 @@ class GameContext:
 # Servidor
 # --------------------------------------------------------------------------
 class GameServer:
+    """Servidor TCP do IMPOSTOR: aceita conexões, gerencia a sala (lobby) e dispara as partidas."""
     def __init__(self, host, port, min_turns, max_turns,
                  turn_timeout, vote_timeout):
+        """Guarda a configuração (turnos e timeouts) e cria o estado compartilhado da sala."""
         self.host = host
         self.port = port
         self.min_turns = max(1, min_turns)            # turnos antes da 1ª decisão "Continuar x Votação"
@@ -299,6 +301,7 @@ class GameServer:
     # Camada de rede: accept loop
     # ------------------------------------------------------------------
     def serve_forever(self):
+        """Abre o socket TCP de escuta e cria uma thread handle_client por conexão aceita."""
         srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)  # TCP
         srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         srv.bind((self.host, self.port))
@@ -324,6 +327,7 @@ class GameServer:
     # Thread de cada cliente
     # ------------------------------------------------------------------
     def handle_client(self, conn, addr):
+        """Thread de um cliente: handshake, laço de leitura e remoção do jogador ao terminar."""
         player = Player(conn, addr)
         try:
             conn.settimeout(HANDSHAKE_TIMEOUT)      # só durante o handshake
@@ -442,6 +446,7 @@ class GameServer:
     # Lobby
     # ------------------------------------------------------------------
     def _on_ready(self, player):
+        """Trata player_ready no lobby: marca o jogador como pronto e tenta iniciar a partida."""
         with self.lock:
             if self.state != WAIT_PLAYERS:
                 player.send("error", code="INVALID_STATE",
@@ -469,6 +474,7 @@ class GameServer:
                          daemon=True).start()
 
     def _broadcast_lobby(self, notice):
+        """Envia lobby_update (jogadores, prontos e aviso) a toda a sala."""
         with self.lock:
             self.broadcast(
                 "lobby_update",
@@ -502,6 +508,7 @@ class GameServer:
             p.send(type_, **data)
 
     def _set_state(self, state):
+        """Muda o estado do servidor e o anuncia a todos com state_change."""
         with self.lock:
             self.state = state
         log.info("Estado -> %s", state)
@@ -511,6 +518,7 @@ class GameServer:
     # Thread da PARTIDA (árbitro)
     # ==================================================================
     def _run_game(self, participants, events):
+        """Thread da partida (árbitro): sorteia tema, palavra e impostor, joga e anuncia o fim."""
         theme = random.choice(list(THEMES))
         word = random.choice(THEMES[theme])
         impostor = random.choice(participants)           # sorteio do Impostor
@@ -632,6 +640,7 @@ class GameServer:
 
     @staticmethod
     def _validate_text(player, data):
+        """Valida texto de pergunta/resposta: não vazio e limitado a MAX_TEXT caracteres."""
         text = str(data.get("text", "")).strip()
         if not text:
             return "O texto não pode ser vazio."
@@ -758,6 +767,7 @@ class GameServer:
     # Votação
     # ------------------------------------------------------------------
     def _voting_phase(self, ctx):
+        """Fase VOTING: coleta votos secretos, apura e decide entre fim de jogo e palpite."""
         self._set_state(VOTING)
         voters = ctx.active()
         by_name = {p.name.casefold(): p for p in voters}
@@ -803,6 +813,7 @@ class GameServer:
     # Tentativa de empate do Impostor
     # ------------------------------------------------------------------
     def _guess_phase(self, ctx):
+        """Fase GUESSING: o impostor descoberto tenta adivinhar a palavra (empate se acertar)."""
         self._set_state(GUESSING)
         imp = ctx.impostor
 
@@ -830,6 +841,7 @@ class GameServer:
 
 # --------------------------------------------------------------------------
 def main():
+    """Lê os argumentos de linha de comando, configura o log e inicia o servidor."""
     ap = argparse.ArgumentParser(description="Servidor do jogo IMPOSTOR (TCP)")
     ap.add_argument("--host", default="0.0.0.0", help="interface de escuta (padrão 0.0.0.0)")
     ap.add_argument("--port", type=int, default=5000, help="porta TCP (padrão 5000)")
