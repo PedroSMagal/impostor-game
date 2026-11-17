@@ -33,9 +33,13 @@ Pastas ao lado deste arquivo
 Requisitos: Python 3.8+, Tkinter e Pillow (pip install pillow).
 Uso:  python3 client.py [--host 127.0.0.1] [--port 5000] [--name Ana]
 Atalhos: F11 tela cheia | Esc sai da tela cheia | Enter = "Estou pronto" no lobby
+Reações: a faixa "Reagir" envia send_emoji; todos recebem broadcast_emoji e veem o emoji
+por 3 s sobre o ícone do jogador (ou sobre o balão, se ele tiver um). Um novo emoji substitui o
+anterior. Os emojis são desenhados com Pillow a partir de uma fonte de emoji colorida do sistema.
 """
 import argparse
 import json
+import os
 import queue
 import re
 import socket
@@ -48,7 +52,13 @@ from tkinter import font as tkfont
 from PIL import Image, ImageDraw, ImageFont, ImageTk
 
 PROTOCOL_VERSION = "IMPOSTOR/1.0"
-DW, DH, BAR_H = 1000, 620, 96          # tamanho de "projeto" da sala e altura da barra
+DW, DH, BAR_H = 1000, 620, 96          # tamanho de "projeto" da sala e altura mínima da barra
+NARROW_W = 760                         # abaixo desta largura a barra de ações usa o layout compacto
+EMOJI_BAR_H = 40                       # altura (estimada) da faixa de reações, para o 1º cálculo de escala
+EMOJIS = ("🤔", "😂", "😖", "🥸", "😱", "🤥", "🤫")   # DEVE ser igual ao EMOJIS do server.py
+EMOJI_SECS = 3.0                       # tempo que cada emoji fica na tela
+EMO = 46                               # tamanho do emoji na sala (coordenadas de projeto)
+EMO_R = 30                             # raio do círculo branco atrás do emoji
 BG, GOLD = "#14202b", "#f2c14e"
 BASE = Path(__file__).resolve().parent
 IMG_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".bmp")
@@ -103,6 +113,7 @@ RULES = [
           "• Impostor: observe as respostas anteriores e responda de forma vaga.\n"
           "• Botão \"Ver a palavra (segure)\" mostra de novo a palavra, só para você.\n"
           "• Botão \"Histórico\" lista todas as perguntas e respostas da partida.\n"
+          "• Reações: use a faixa \"Reagir\" para mostrar um emoji sobre o seu ícone por 3 segundos.\n"
           "• F11 = tela cheia."),
 ]
 
@@ -136,6 +147,56 @@ def load_icons():
             if icons:
                 return icons
     return []
+
+
+# (arquivo da fonte de emoji colorida, tamanho exigido/ideal da fonte) por sistema operacional
+EMOJI_FONTS = [
+    (os.path.join(os.environ.get("WINDIR", "C:/Windows"), "Fonts", "seguiemj.ttf"), 128),
+    ("/System/Library/Fonts/Apple Color Emoji.ttc", 160),
+    ("/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf", 109),
+    ("/usr/share/fonts/noto/NotoColorEmoji.ttf", 109),
+    ("/usr/share/fonts/google-noto-emoji/NotoColorEmoji.ttf", 109),
+    ("/usr/share/fonts/google-noto-color-emoji/NotoColorEmoji.ttf", 109),
+    (os.path.expanduser("~/.local/share/fonts/NotoColorEmoji.ttf"), 109),
+]
+RESAMPLE = getattr(getattr(Image, "Resampling", Image), "LANCZOS", None)
+
+
+def _render_emoji(font, size, ch):
+    """Desenha o emoji 'ch' com a fonte colorida e devolve um RGBA quadrado (ou None se não saiu nada)."""
+    try:
+        img = Image.new("RGBA", (size * 2, size * 2), (0, 0, 0, 0))
+        ImageDraw.Draw(img).text((size // 2, size // 4), ch, font=font, embedded_color=True)
+        box = img.getbbox()
+        if not box:
+            return None
+        img = img.crop(box)
+        side = max(img.size)
+        sq = Image.new("RGBA", (side, side), (0, 0, 0, 0))
+        sq.paste(img, ((side - img.size[0]) // 2, (side - img.size[1]) // 2))
+        return sq
+    except Exception:
+        return None
+
+
+def load_emoji_sources():
+    """Gera as imagens dos emojis (dict emoji -> imagem RGBA ou None) usando uma fonte colorida do sistema.
+
+    Se nenhuma fonte for encontrada, os valores ficam None e o cliente desenha o emoji como texto.
+    """
+    out = {ch: None for ch in EMOJIS}
+    for path, size in EMOJI_FONTS:
+        if not os.path.isfile(path):
+            continue
+        try:
+            font = ImageFont.truetype(path, size)
+        except Exception:
+            continue
+        for ch in EMOJIS:
+            out[ch] = _render_emoji(font, size, ch)
+        if any(out.values()):
+            break
+    return out
 
 
 def load_background():
@@ -252,18 +313,18 @@ def rrect(c, x0, y0, x1, y1, r, **kw):
 class App(tk.Tk):
     """Janela principal: tela de login, sala do jogo (canvas), barra de ações e tratamento do protocolo."""
     PASSIVE = {"info", "error", "pong", "lobby_update", "vote_progress",
-               "continue_vote_cast"}
+               "continue_vote_cast", "broadcast_emoji"}
 
     def __init__(self, args):
         """Monta a janela, carrega imagens, cria as telas e agenda pump() e poll_taken()."""
         super().__init__()
         self.title("IMPOSTOR")
         sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
-        self.k = max(0.5, min(1.0, (sw - 30) / DW, (sh - 140 - BAR_H) / DH))
-        gw, gh = int(DW * self.k), int(DH * self.k) + BAR_H
+        self.k = max(0.5, min(1.0, (sw - 30) / DW, (sh - 140 - BAR_H - EMOJI_BAR_H) / DH))
+        gw, gh = int(DW * self.k), int(DH * self.k) + BAR_H + EMOJI_BAR_H
         self.geometry("%dx%d+%d+%d" % (gw, gh, max(0, (sw - gw) // 2),
                                        max(0, (sh - gh - 80) // 2)))
-        self.minsize(520, 420)
+        self.minsize(440, 400)
         self.configure(bg=BG)
         self.bind("<F11>", self.toggle_full)
         self.bind("<Escape>", lambda _e: self.attributes("-fullscreen", False))
@@ -285,7 +346,8 @@ class App(tk.Tk):
             self.icons = [("Padrão", _placeholder("P"))]
         self.icon_map = dict(self.icons)
         self.bg_src = load_background()
-        self.photos = {}
+        self.emoji_src = load_emoji_sources()
+        self.photos, self.emo_photos = {}, {}
         self.sock = self.rfile = None
         self.inbox = queue.Queue()
         self.hist_win = self.rules_win = None
@@ -305,6 +367,7 @@ class App(tk.Tk):
         self.me = ""
         self.players, self.skins, self.ready, self.gone = [], {}, set(), set()
         self.bubbles, self.active, self.spot = {}, None, None
+        self.emojis, self.bubble_tops = {}, {}      # emojis ativos {nome: (emoji, expira)}; topo dos balões
         self.role = self.word = None
         self.theme, self.turn = "", 0
         self.state = "WAIT_PLAYERS"
@@ -341,34 +404,58 @@ class App(tk.Tk):
     # Tela inicial
     # ------------------------------------------------------------------
     def build_login(self, args):
-        """Constrói a tela inicial: nome, servidor, porta, grade de skins e botão de entrar."""
+        """Constrói a tela inicial (responsiva): nome, servidor, porta, grade de skins rolável e botão de entrar."""
         f = self.login = tk.Frame(self, bg=BG)
+        # O botão de entrar e o aviso são empacotados primeiro, embaixo: assim NUNCA são cortados.
+        tk.Button(f, text="ENTRAR NA SALA", font=(self.fam, 14, "bold"), bg="#46c35f",
+                  fg="white", activebackground="#3aa850", relief="flat", padx=24, pady=8,
+                  command=self.connect).pack(side="bottom", pady=8)
+        self.lbl_login = tk.Label(f, text="", fg="#ff8a80", bg=BG, font=(self.fam, 11),
+                                  wraplength=700)
+        self.lbl_login.pack(side="bottom", pady=(4, 0))
+        self.lbl_hint = tk.Label(f, text="Jogando em outra máquina? Em 'Servidor' coloque o IP de "
+                                         "quem rodou o server.py.", fg="#7f98ad", bg=BG,
+                                 font=(self.fam, 9), wraplength=700)
+        self.lbl_hint.pack(side="bottom")
+
         tk.Label(f, text="IMPOSTOR", font=(self.fam, 32, "bold"), fg=GOLD,
-                 bg=BG).pack(pady=(14, 0))
+                 bg=BG).pack(side="top", pady=(14, 0))
         tk.Label(f, text="Escolha seu nome e sua skin", font=(self.fam, 12),
-                 fg="#a9c4d9", bg=BG).pack()
-        row = tk.Frame(f, bg=BG)
-        row.pack(pady=10)
+                 fg="#a9c4d9", bg=BG).pack(side="top")
+        row = self.login_row = tk.Frame(f, bg=BG)
+        row.pack(side="top", pady=10)
         self.v_name = tk.StringVar(value=args.name or "")
         self.v_host = tk.StringVar(value=args.host)
         self.v_port = tk.StringVar(value=str(args.port))
+        self.login_pairs = []
         for label, var, w in (("Nome", self.v_name, 16), ("Servidor", self.v_host, 16),
                               ("Porta", self.v_port, 6)):
-            tk.Label(row, text=label, fg="white", bg=BG, font=(self.fam, 11)
+            pair = tk.Frame(row, bg=BG)
+            tk.Label(pair, text=label, fg="white", bg=BG, font=(self.fam, 11)
                      ).pack(side="left", padx=(12, 4))
-            e = tk.Entry(row, textvariable=var, width=w, font=(self.fam, 12))
+            e = tk.Entry(pair, textvariable=var, width=w, font=(self.fam, 12))
             e.pack(side="left")
             if label == "Nome":
                 self.e_name = e
-        grid = tk.Frame(f, bg=BG)
-        grid.pack(pady=4)
-        self.cells = []
+            self.login_pairs.append(pair)
+        self.login_wide = None
+
+        # Grade de skins dentro de um canvas rolável: com janela pequena ela rola em vez de cortar.
+        holder = tk.Frame(f, bg=BG)
+        holder.pack(side="top", fill="both", expand=True, padx=10, pady=4)
+        self.skin_cv = tk.Canvas(holder, bg=BG, highlightthickness=0)
+        sb = tk.Scrollbar(holder, orient="vertical", command=self.skin_cv.yview)
+        self.skin_cv.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y")
+        self.skin_cv.pack(side="left", fill="both", expand=True)
+        grid = self.skin_grid = tk.Frame(self.skin_cv, bg=BG)
+        self.skin_win = self.skin_cv.create_window((0, 0), window=grid, anchor="n")
+        self.cells, self.skin_cols = [], 0
         self.thumbs = [ImageTk.PhotoImage(circle_avatar(im, 76)) for _n, im in self.icons]
         self.thumbs_x = [ImageTk.PhotoImage(taken_avatar(im, 76)) for _n, im in self.icons]
         for i, (nm, _im) in enumerate(self.icons):
             cell = tk.Frame(grid, bg="#1d2d3c", highlightthickness=3,
                             highlightbackground="#1d2d3c", padx=6, pady=3)
-            cell.grid(row=i // 5, column=i % 5, padx=6, pady=6)
             lb1 = tk.Label(cell, image=self.thumbs[i], bg="#1d2d3c")
             lb2 = tk.Label(cell, text=nm, fg="white", bg="#1d2d3c", font=(self.fam, 9),
                            wraplength=90)
@@ -377,17 +464,69 @@ class App(tk.Tk):
             for w in (cell, lb1, lb2):
                 w.bind("<Button-1>", lambda _e, k=i: self.select_skin(k))
             self.cells.append((cell, lb1, lb2))
+        self.layout_skins(5)
         self.select_skin(0)
-        tk.Label(f, text="Jogando em outra máquina? Em 'Servidor' coloque o IP de quem "
-                         "rodou o server.py.", fg="#7f98ad", bg=BG,
-                 font=(self.fam, 9)).pack()
-        self.lbl_login = tk.Label(f, text="", fg="#ff8a80", bg=BG, font=(self.fam, 11),
-                                  wraplength=700)
-        self.lbl_login.pack(pady=(4, 0))
-        tk.Button(f, text="ENTRAR NA SALA", font=(self.fam, 14, "bold"), bg="#46c35f",
-                  fg="white", activebackground="#3aa850", relief="flat", padx=24, pady=8,
-                  command=self.connect).pack(pady=8)
+        grid.bind("<Configure>", lambda _e: self.skin_cv.configure(
+            scrollregion=self.skin_cv.bbox("all")))
+        self.skin_cv.bind("<Configure>", self.on_skin_resize)
+        self.skin_cv.bind("<Enter>", lambda _e: self.bind_wheel(True))
+        self.skin_cv.bind("<Leave>", lambda _e: self.bind_wheel(False))
+        f.bind("<Configure>", self.on_login_resize)
         self.e_name.bind("<Return>", lambda _e: self.connect())
+
+    def layout_skins(self, cols):
+        """Distribui as skins na grade com 'cols' colunas (só refaz se o número de colunas mudou)."""
+        cols = max(1, min(5, cols))
+        if cols == self.skin_cols:
+            return
+        self.skin_cols = cols
+        for i, (cell, _l1, _l2) in enumerate(self.cells):
+            cell.grid(row=i // cols, column=i % cols, padx=6, pady=6)
+
+    def on_skin_resize(self, ev):
+        """Recalcula as colunas da grade de skins e recentraliza a grade ao mudar a largura."""
+        self.skin_cv.coords(self.skin_win, ev.width // 2, 0)
+        self.layout_skins(max(1, ev.width // 112))
+
+    def on_login_resize(self, ev):
+        """Login responsivo: empilha Nome/Servidor/Porta em janelas estreitas e ajusta as quebras de linha."""
+        if ev.widget is not self.login:
+            return
+        wide = ev.width >= 700
+        if wide != self.login_wide:
+            self.login_wide = wide
+            for pair in self.login_pairs:
+                pair.pack_forget()
+                if wide:
+                    pair.pack(side="left")
+                else:
+                    pair.pack(side="top", pady=2)
+        wrap = max(200, ev.width - 40)
+        self.lbl_login.configure(wraplength=wrap)
+        self.lbl_hint.configure(wraplength=wrap)
+
+    def bind_wheel(self, on):
+        """Liga/desliga a rolagem com o mouse na grade de skins (Windows, macOS e Linux)."""
+        if on:
+            self.bind_all("<MouseWheel>", self.on_wheel)
+            self.bind_all("<Button-4>", self.on_wheel)
+            self.bind_all("<Button-5>", self.on_wheel)
+        else:
+            for ev in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+                self.unbind_all(ev)
+
+    def on_wheel(self, ev):
+        """Rola a grade de skins com a roda do mouse, só quando o conteúdo é maior que a área visível."""
+        bb = self.skin_cv.bbox("all")
+        if not bb or bb[3] - bb[1] <= self.skin_cv.winfo_height():
+            return
+        if getattr(ev, "num", 0) == 4:
+            step = -1
+        elif getattr(ev, "num", 0) == 5:
+            step = 1
+        else:
+            step = -1 if ev.delta > 0 else 1
+        self.skin_cv.yview_scroll(step, "units")
 
     def is_taken(self, i):
         """True se a skin de índice i já está em uso por outro jogador (segundo o servidor)."""
@@ -503,10 +642,34 @@ class App(tk.Tk):
     def build_game(self):
         """Constrói a tela do jogo: canvas da sala, barra de ações e botão 'Ver a palavra'."""
         g = self.game = tk.Frame(self, bg=BG)
-        # a barra é empacotada primeiro: assim ela NUNCA é cortada
-        self.bar = tk.Frame(g, bg="#0f1923", height=BAR_H)
+        # a barra é empacotada primeiro: assim ela NUNCA é cortada. Sua altura acompanha o
+        # conteúdo (layout compacto em janelas estreitas) e a sala é reescalada em seguida.
+        self.bar = tk.Frame(g, bg="#0f1923")
         self.bar.pack(side="bottom", fill="x")
-        self.bar.pack_propagate(False)
+        self.bar.bind("<Configure>", lambda _e: self.schedule_scale())
+        # Faixa de reações (emojis), logo acima da barra de ações.
+        self.emo_bar = tk.Frame(g, bg="#0b131b")
+        self.emo_bar.pack(side="bottom", fill="x")
+        inner = tk.Frame(self.emo_bar, bg="#0b131b")
+        inner.pack(pady=4)
+        tk.Label(inner, text="Reagir:", fg="#7f98ad", bg="#0b131b",
+                 font=(self.fam, 9)).pack(side="left", padx=(0, 6))
+        self.emo_btns, self.emo_imgs, self._emo_enabled = [], [], True
+        for ch in EMOJIS:
+            src = self.emoji_src.get(ch)
+            kw = {}
+            if src is not None:
+                ph = ImageTk.PhotoImage(src.resize((26, 26), RESAMPLE) if RESAMPLE else src)
+                self.emo_imgs.append(ph)
+                kw["image"] = ph
+            else:
+                kw.update(text=ch, font=(self.fam, 13))
+            b = tk.Button(inner, bg="#1b2a38", activebackground="#33506b", relief="flat", bd=0,
+                          padx=5, pady=2, cursor="hand2",
+                          command=lambda e=ch: self.send_emoji(e), **kw)
+            b.pack(side="left", padx=2)
+            self.emo_btns.append(b)
+        self.emo_bar.bind("<Configure>", lambda _e: self.schedule_scale())
         self.canvas = SCanvas(g, self.k, highlightthickness=0, bg=BG)
         self.canvas.pack(side="top", expand=True)
         self.bg_photo = None
@@ -517,7 +680,8 @@ class App(tk.Tk):
                         bg="#26394d", fg="white", relief="flat", padx=8, pady=4)
         btn.bind("<ButtonPress-1>", lambda _e: self.set_peek(True))
         btn.bind("<ButtonRelease-1>", lambda _e: self.set_peek(False))
-        self.peek_win = self.canvas.create_window(DW - 85, 30, window=btn, state="hidden")
+        self.peek_win = self.canvas.create_window(DW - 12, 12, window=btn, anchor="ne",
+                                                  state="hidden")
         g.bind("<Configure>", self.on_resize)
 
     def build_bg(self):
@@ -530,6 +694,10 @@ class App(tk.Tk):
         """Reage a mudanças de tamanho da janela (com 80 ms de atraso para evitar excesso)."""
         if ev.widget is not self.game:
             return
+        self.schedule_scale()
+
+    def schedule_scale(self):
+        """Agenda apply_scale() (com 80 ms de atraso, juntando vários eventos seguidos)."""
         if getattr(self, "_rs", None):
             self.after_cancel(self._rs)
         self._rs = self.after(80, self.apply_scale)
@@ -537,7 +705,10 @@ class App(tk.Tk):
     def apply_scale(self):
         """Recalcula o fator de escala k e reajusta canvas, fontes, fundo e fotos."""
         self._rs = None
-        w, h = self.game.winfo_width(), self.game.winfo_height() - BAR_H
+        bar_h = self.bar.winfo_height() if self.bar.winfo_ismapped() else BAR_H
+        emo_h = self.emo_bar.winfo_height() if self.emo_bar.winfo_ismapped() else EMOJI_BAR_H
+        w = self.game.winfo_width()
+        h = self.game.winfo_height() - max(bar_h, 40) - max(emo_h, 20)
         if w < 50 or h < 50:
             return
         k = max(0.4, min(2.0, w / DW, h / DH))
@@ -548,8 +719,9 @@ class App(tk.Tk):
         self.canvas.configure(width=int(DW * k), height=int(DH * k))
         self.fn_name.configure(size=-max(7, int(round(11 * k * 4 / 3))))
         self.photos.clear()
+        self.emo_photos.clear()
         self.build_bg()
-        tk.Canvas.coords(self.canvas, self.peek_win, (DW - 85) * k, 30 * k)
+        tk.Canvas.coords(self.canvas, self.peek_win, (DW - 12) * k, 12 * k)
         if self.end:
             self.show_end()
         self.dirty = True
@@ -615,8 +787,17 @@ class App(tk.Tk):
         self.reset_state()
         self.show_login(msg)
 
+    def leave_to_login(self):
+        """Botão SAIR da tela final: avisa o servidor (player_quit), desconecta e volta ao início (login)."""
+        if self.sock:
+            self.send("player_quit")
+            if self.sock is None:          # a falha de envio já levou ao login
+                return
+        self.canvas.delete("endwin")
+        self.to_login("")
+
     def on_close(self):
-        """Fecha a janela: avisa o servidor com player_quit e encerra o programa."""
+        """Fecha a janela (X): avisa o servidor com player_quit e encerra o programa."""
         if self.sock:
             self.send("player_quit")
         self.close_socket()
@@ -646,6 +827,12 @@ class App(tk.Tk):
                         break
         except queue.Empty:
             pass
+        if self.emojis:                         # remove os emojis que já passaram de 3 s
+            old = [n for n, (_e, until) in self.emojis.items() if now >= until]
+            for n in old:
+                del self.emojis[n]
+            if old:
+                self.dirty = True
         if (self.active or self.spot) and now - self.blink_t > 0.5:
             self.blink, self.blink_t, self.dirty = not self.blink, now, True
         if (self.want_ready and self.state == "WAIT_PLAYERS" and self.end is None
@@ -893,6 +1080,24 @@ class App(tk.Tk):
         self.say(m)
         self.pause(1200)
 
+    def on_broadcast_emoji(self, d):
+        """broadcast_emoji: um jogador reagiu; o emoji fica 3 s e substitui o anterior desse jogador."""
+        name, emoji = d.get("player"), d.get("emoji")
+        if name and emoji in EMOJIS:
+            self.emojis[name] = (emoji, time.monotonic() + EMOJI_SECS)
+
+    def send_emoji(self, emoji):
+        """Envia send_emoji ao servidor (botões da faixa 'Reagir'); ignorado fora da sala ou na tela final."""
+        if self.sock and self.welcomed and self.end is None:
+            self.send("send_emoji", emoji=emoji)
+
+    def set_emoji_buttons(self, enabled):
+        """Habilita/desabilita os botões de emoji (desabilitados na tela final)."""
+        if enabled != self._emo_enabled:
+            self._emo_enabled = enabled
+            for b in self.emo_btns:
+                b.configure(state="normal" if enabled else "disabled")
+
     def on_error(self, d):
         """error: aviso do servidor; em INVALID_INPUT reabre a entrada para nova tentativa."""
         self.say("Aviso do servidor", d["message"])
@@ -1027,65 +1232,129 @@ class App(tk.Tk):
     def sync_bar(self):
         """Reconstrói a barra de ações apenas quando o estado que a define mudou."""
         key = (self.pending, self.pend_token, self.state, self.me in self.ready,
-               self.end is None)
+               self.end is None, self.game.winfo_width() < NARROW_W)
         if key != self.bar_key:
             self.bar_key = key
             self.render_bar()
 
     def render_bar(self):
-        """Monta a barra de ações: pronto, campo de texto, Continuar/Votação, candidatos ou espera."""
+        """Monta a barra de ações (responsiva): pronto, campo de texto, Continuar/Votação, candidatos ou espera.
+
+        Janela larga (>= NARROW_W): uma linha, com Regras/Histórico e o cronômetro à direita.
+        Janela estreita: duas camadas (cronômetro + Regras/Histórico em cima; pergunta e controles
+        embaixo), com textos que quebram linha e botões em grade, para que nada fique cortado.
+        """
         for w in self.bar.winfo_children():
             w.destroy()
         mode = self.pending
         if mode is None and self.state == "WAIT_PLAYERS" and self.end is None:
             mode = "ready"
-        side = tk.Frame(self.bar, bg="#0f1923")
-        side.pack(side="right", padx=(4, 10))
-        small = lambda t, cmd: tk.Button(side, text=t, command=cmd, bg="#26394d", fg="white",
-                                         relief="flat", activebackground="#33506b",
-                                         font=(self.fam, 10, "bold"), width=11, pady=2)
-        small("Regras", self.open_rules).pack(pady=(14, 3))
-        small("Histórico", self.open_history).pack()
-        self.timer_lbl = tk.Label(self.bar, text="", fg=GOLD, bg="#0f1923",
-                                  font=(self.fam, 11, "bold"))
-        self.timer_lbl.pack(side="right", padx=6)
-        box = tk.Frame(self.bar, bg="#0f1923")
-        box.pack(side="left", expand=True, fill="both", padx=12)
-        lab = lambda t: tk.Label(box, text=t, fg="white", bg="#0f1923",
-                                 font=(self.fam, 11, "bold"))
-        btn = lambda t, bg, cmd: tk.Button(box, text=t, bg=bg, fg="white", relief="flat",
-                                           activebackground=bg, font=(self.fam, 11, "bold"),
-                                           padx=14, pady=7, command=cmd)
+        CB = "#0f1923"
+        narrow = self.game.winfo_width() < NARROW_W
+        small_btn = lambda parent, t, cmd, **kw: tk.Button(
+            parent, text=t, command=cmd, bg="#26394d", fg="white", relief="flat",
+            activebackground="#33506b", font=(self.fam, 10 if not narrow else 9, "bold"), **kw)
+
+        if narrow:
+            top = tk.Frame(self.bar, bg=CB)
+            top.pack(side="top", fill="x", padx=8, pady=(4, 0))
+            self.timer_lbl = tk.Label(top, text="", fg=GOLD, bg=CB, font=(self.fam, 11, "bold"))
+            self.timer_lbl.pack(side="left")
+            small_btn(top, "Histórico", self.open_history, padx=8, pady=0).pack(side="right",
+                                                                                padx=(4, 0))
+            small_btn(top, "Regras", self.open_rules, padx=8, pady=0).pack(side="right")
+            box = tk.Frame(self.bar, bg=CB)
+            box.pack(side="top", fill="x", padx=8, pady=(2, 6))
+        else:
+            tk.Frame(self.bar, bg=CB, width=1, height=BAR_H).pack(side="left")   # altura mínima
+            side = tk.Frame(self.bar, bg=CB)
+            side.pack(side="right", padx=(4, 10))
+            small_btn(side, "Regras", self.open_rules, width=11, pady=2).pack(pady=(14, 3))
+            small_btn(side, "Histórico", self.open_history, width=11, pady=2).pack()
+            self.timer_lbl = tk.Label(self.bar, text="", fg=GOLD, bg=CB,
+                                      font=(self.fam, 11, "bold"))
+            self.timer_lbl.pack(side="right", padx=6)
+            box = tk.Frame(self.bar, bg=CB)
+            box.pack(side="left", expand=True, fill="both", padx=12)
+
+        def lead(text, wide_pady=0):
+            """Texto de orientação: à esquerda (largo) ou em cima, com quebra de linha (estreito)."""
+            lb = tk.Label(box, text=text, fg="white", bg=CB, font=(self.fam, 11, "bold"))
+            if narrow:
+                lb.configure(justify="left", anchor="w", wraplength=max(120, self.game.winfo_width() - 30))
+                lb.pack(side="top", fill="x")
+                box.bind("<Configure>", lambda e, l=lb: l.configure(wraplength=max(120, e.width - 4)))
+            else:
+                lb.pack(side="left", padx=(0, 10), pady=wide_pady)
+            return lb
+
+        ctl = tk.Frame(box, bg=CB) if narrow else box
+
+        def btn(t, bg, cmd):
+            return tk.Button(ctl, text=t, bg=bg, fg="white", relief="flat", activebackground=bg,
+                             font=(self.fam, 10 if narrow else 11, "bold"),
+                             padx=10 if narrow else 14, pady=4 if narrow else 7, command=cmd)
+
+        def place(widgets, colw=170):
+            """Largo: botões lado a lado. Estreito: grade que reorganiza as colunas ao redimensionar."""
+            if not narrow:
+                for b in widgets:
+                    b.pack(side="left", padx=5, pady=24)
+                return
+            state = {"cols": 0}
+
+            def relayout(_e=None):
+                cols = max(1, min(len(widgets), (ctl.winfo_width() or self.game.winfo_width()) // colw))
+                if cols == state["cols"]:
+                    return
+                state["cols"] = cols
+                for c_ in range(len(widgets)):
+                    ctl.grid_columnconfigure(c_, weight=1 if c_ < cols else 0)
+                for i, b in enumerate(widgets):
+                    b.grid(row=i // cols, column=i % cols, padx=3, pady=3, sticky="ew")
+            ctl.bind("<Configure>", relayout)
+            relayout()
+
+        if narrow:
+            def start_ctl():
+                ctl.pack(side="top", fill="x", pady=(4, 0))
+        else:
+            def start_ctl():
+                pass
+
         if mode == "ready":
             if self.me in self.ready:
-                lab("Você está pronto. Aguardando os outros jogadores...").pack(pady=30)
+                lead("Você está pronto. Aguardando os outros jogadores...", 30)
             else:
-                lab("Quando todos estiverem na sala, clique em:").pack(side="left", padx=8)
-                btn("ESTOU PRONTO", "#46c35f", lambda: self.send("player_ready")
-                    ).pack(side="left", pady=24)
+                lead("Quando todos estiverem na sala, clique em:")
+                start_ctl()
+                place([btn("ESTOU PRONTO", "#46c35f", lambda: self.send("player_ready"))])
         elif mode in PROMPTS:
             var = tk.StringVar()
             var.trace_add("write", lambda *_: var.set(var.get()[:200])
                           if len(var.get()) > 200 else None)
-            lab(PROMPTS[mode] + ":").pack(side="left", padx=(0, 8))
-            e = tk.Entry(box, textvariable=var, font=(self.fam, 12), width=34)
-            e.pack(side="left", ipady=5)
+            lead(PROMPTS[mode] + ":")
+            start_ctl()
+            send_b = btn("ENVIAR", "#2d6cdf", lambda: self.submit_text(var))
+            send_b.pack(side="right", padx=(8, 0))
+            e = tk.Entry(ctl, textvariable=var, font=(self.fam, 12), width=10)
+            e.pack(side="left", fill="x", expand=True, ipady=5, pady=0 if narrow else 24)
             e.bind("<Return>", lambda _e: self.submit_text(var))
             e.focus_set()
-            btn("ENVIAR", "#2d6cdf", lambda: self.submit_text(var)).pack(side="left", padx=8)
         elif mode == "continue":
-            lab("Como seguir?").pack(side="left", padx=(0, 10))
-            btn("VOTAÇÃO (votar no impostor)", "#d1382e",
-                lambda: self.choose_continue("vote")).pack(side="left", padx=5, pady=24)
-            btn("CONTINUAR (outro turno)", "#2e9d48",
-                lambda: self.choose_continue("continue")).pack(side="left", padx=5)
+            lead("Como seguir?")
+            start_ctl()
+            place([btn("VOTAÇÃO (votar no impostor)", "#d1382e",
+                       lambda: self.choose_continue("vote")),
+                   btn("CONTINUAR (outro turno)", "#2e9d48",
+                       lambda: self.choose_continue("continue"))], colw=210)
         elif mode == "vote":
-            lab("Quem é o Impostor?").pack(side="left", padx=(0, 10))
-            for name in self.candidates:
-                btn(name, "#6b4fd1", lambda n=name: self.cast_vote(n)
-                    ).pack(side="left", padx=4, pady=24)
+            lead("Quem é o Impostor?")
+            start_ctl()
+            place([btn(name, "#6b4fd1", lambda n=name: self.cast_vote(n))
+                   for name in self.candidates], colw=120)
         else:
-            lab("Aguarde: ainda não é a sua vez.").pack(pady=30)
+            lead("Aguarde: ainda não é a sua vez.", 30)
 
     # ------------------------------------------------------------------
     # Desenho (tudo em coordenadas de projeto 1000x620)
@@ -1102,6 +1371,9 @@ class App(tk.Tk):
         self.draw_banner()
         if self.end:
             self.draw_end()
+        else:
+            self.draw_emojis()
+        self.set_emoji_buttons(self.end is None)
         in_game = self.state in ("IN_GAME", "DECIDING", "VOTING", "GUESSING")
         c.itemconfigure(self.peek_win,
                         state="normal" if (self.role == "CIVILIAN" and in_game
@@ -1156,6 +1428,7 @@ class App(tk.Tk):
 
     def draw_bubbles(self):
         """Desenha o balão (pergunta, resposta, voto ou palpite) de cada jogador."""
+        self.bubble_tops = {}
         for name, (kind, text) in self.bubbles.items():
             if name not in self.players[:5]:
                 continue
@@ -1166,10 +1439,11 @@ class App(tk.Tk):
                 x, y, dia = SEATS[self.players.index(name)]
                 maxh = 92 if y < 300 else 100
             hdr, fill, edge, hcol = STYLE[kind]
-            self.bubble(x, y - dia // 2 - 12, hdr, text, fill, edge, hcol, 250, maxh)
+            self.bubble_tops[name] = self.bubble(x, y - dia // 2 - 12, hdr, text, fill, edge,
+                                                 hcol, 250, maxh)
 
     def bubble(self, cx, bottom, hdr, text, fill, edge, hcol, maxw, maxh):
-        """Desenha um balão de fala, reduzindo o texto com reticências se não couber."""
+        """Desenha um balão de fala, reduzindo o texto com reticências se não couber; devolve o y do topo."""
         c = self.canvas
         body = text
         while True:
@@ -1193,6 +1467,37 @@ class App(tk.Tk):
                       tags="dyn")
         c.create_text(x0 + 10, y0 + 22, text=body, font=self.f_bub, fill="#1b2a38",
                       width=maxw - 20, anchor="nw", tags="dyn")
+        return y0
+
+    def emo_photo(self, emoji):
+        """Imagem do emoji na escala atual (com cache); None se não há fonte de emoji colorida."""
+        src = self.emoji_src.get(emoji)
+        if src is None:
+            return None
+        size = max(10, int(EMO * self.k))
+        key = (emoji, size)
+        if key not in self.emo_photos:
+            self.emo_photos[key] = ImageTk.PhotoImage(src.resize((size, size), RESAMPLE)
+                                                      if RESAMPLE else src)
+        return self.emo_photos[key]
+
+    def draw_emojis(self):
+        """Desenha cada emoji ativo sobre o ícone do jogador, ou sobre o balão se ele tiver um."""
+        c = self.canvas
+        for name, (emoji, _until) in self.emojis.items():
+            if name not in self.players[:5]:
+                continue
+            x, y, dia = SPOT if name == self.spot else SEATS[self.players.index(name)]
+            top = self.bubble_tops.get(name)
+            base = (top - 4) if top is not None else (y - dia // 2 - 12)   # parte de baixo do emoji
+            cy = max(EMO_R + 4, base - EMO_R)
+            c.create_oval(x - EMO_R, cy - EMO_R, x + EMO_R, cy + EMO_R, fill="white",
+                          outline="#cfd8e3", width=2, tags="dyn")
+            ph = self.emo_photo(emoji)
+            if ph is not None:
+                c.create_image(x, cy, image=ph, tags="dyn")
+            else:
+                c.create_text(x, cy, text=emoji, font=(self.fam, 24), tags="dyn")
 
     def draw_chips(self):
         """Desenha a etiqueta com o tema e o número do turno."""
@@ -1227,15 +1532,20 @@ class App(tk.Tk):
     # Tela final
     # ------------------------------------------------------------------
     def show_end(self):
-        """Cria os botões JOGAR DE NOVO e SAIR da tela final."""
+        """Cria os botões JOGAR DE NOVO e SAIR (volta ao login) da tela final, centralizados no canvas."""
         c = self.canvas
         c.delete("endwin")
-        mk = lambda t, bg, cmd: tk.Button(c, text=t, bg=bg, fg="white", relief="flat",
-                                          activebackground=bg, font=(self.fam, 12, "bold"),
-                                          padx=14, pady=6, command=cmd)
-        c.create_window(390, 538, window=mk("JOGAR DE NOVO", "#46c35f",
-                                            lambda: self.close_end(True)), tags="endwin")
-        c.create_window(610, 538, window=mk("SAIR", "#d1382e", self.on_close), tags="endwin")
+        # Os dois botões ficam num único quadro centralizado: em janelas pequenas não se sobrepõem.
+        small = self.k < 0.7
+        fr = tk.Frame(c, bg=BG)
+        mk = lambda t, bg, cmd: tk.Button(fr, text=t, bg=bg, fg="white", relief="flat",
+                                          activebackground=bg,
+                                          font=(self.fam, 10 if small else 12, "bold"),
+                                          padx=10 if small else 14, pady=3 if small else 6,
+                                          command=cmd)
+        mk("JOGAR DE NOVO", "#46c35f", lambda: self.close_end(True)).pack(side="left", padx=6)
+        mk("SAIR", "#d1382e", self.leave_to_login).pack(side="left", padx=6)
+        c.create_window(500, 538, window=fr, tags="endwin")
 
     def close_end(self, again):
         """Fecha a tela final; se again=True, marca o jogador como pronto para nova partida."""

@@ -52,6 +52,10 @@ MAX_TEXT = 200                   # tamanho máximo de pergunta/resposta/palpite
 HANDSHAKE_TIMEOUT = 30           # segundos para o cliente enviar player_join
 NAME_RE = re.compile(r"^[\w\-]{1,15}$")   # nomes: letras/dígitos/_/-, 1 a 15
 MAX_SKIN_LEN = 40                # tamanho máximo do nome da skin (nome do arquivo da imagem)
+# Reações (emojis) que os jogadores podem mostrar a todos. O cliente exibe cada uma por
+# 3 s; o servidor só valida e retransmite. DEVE ser igual à lista EMOJIS do client.py.
+EMOJIS = ("🤔", "😂", "😖", "🥸", "😱", "🤥", "🤫")
+EMOJI_COOLDOWN = 0.3             # segundos mínimos entre dois emojis do mesmo jogador (anti-spam)
 
 # Estados do servidor (máquina de estados da sala)
 WAIT_PLAYERS = "WAIT_PLAYERS"   # lobby: aguardando jogadores e "pronto"
@@ -62,7 +66,7 @@ GUESSING = "GUESSING"           # impostor descoberto tenta adivinhar a palavra
 END_GAME = "END_GAME"           # resultado final
 
 # Temas e palavras secretas (o servidor sorteia um tema e uma palavra)
-THEMES_NOVOS = {
+THEMES = {
     "SUPER-HERÓIS": [
         "HOMEM-ARANHA", "BATMAN", "SUPERMAN", "MULHER-MARAVILHA", "HOMEM DE FERRO",
         "CAPITÃO AMÉRICA", "HULK", "THOR", "PANTERA NEGRA", "FLASH"
@@ -128,6 +132,7 @@ class Player:
         self.name = None
         self.ready = False
         self.skin = ""                   # nome da skin (usado só pelo frontend gráfico)
+        self.last_emoji = 0.0            # instante (monotonic) do último emoji enviado
         self.connected = True
         self._send_lock = threading.Lock()
         # makefile() devolve um objeto de arquivo que facilita ler "uma linha
@@ -334,6 +339,8 @@ class GameServer:
                 return
             elif type_ == "player_ready":
                 self._on_ready(player)
+            elif type_ == "send_emoji":           # reação: vale em qualquer estado
+                self._on_emoji(player, data)
             else:
                 # Eventos de jogo: entregues à thread da partida.
                 with self.lock:
@@ -343,6 +350,25 @@ class GameServer:
                 if in_lobby:
                     player.send("error", code="INVALID_STATE",
                                 message="Evento '%s' não é válido no lobby." % type_)
+
+    # ------------------------------------------------------------------
+    # Reações (emojis)
+    # ------------------------------------------------------------------
+    def _on_emoji(self, player, data):
+        """Trata send_emoji: valida o emoji e o ritmo de envio e retransmite broadcast_emoji a todos.
+
+        Não passa pela fila da partida: é tratado direto na thread do cliente, então funciona
+        no lobby e em qualquer estado do jogo e nunca interfere na ordem dos turnos.
+        """
+        emoji = data.get("emoji")
+        if emoji not in EMOJIS:
+            player.send("error", code="INVALID_EMOJI", message="Emoji não permitido.")
+            return
+        now = time.monotonic()
+        if now - player.last_emoji < EMOJI_COOLDOWN:
+            return                              # rápido demais: ignora em silêncio
+        player.last_emoji = now
+        self.broadcast("broadcast_emoji", player=player.name, emoji=emoji)
 
     # ------------------------------------------------------------------
     # Lobby

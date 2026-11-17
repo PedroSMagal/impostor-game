@@ -10,7 +10,7 @@ Aplicação distribuída no modelo **cliente-servidor** em que de 3 a 5 jogadore
 | **Transporte** | TCP (porta padrão `5000`) |
 | **Servidor** | `server.py` (somente biblioteca padrão) |
 | **Cliente** | `client.py` (interface gráfica Tkinter + Pillow) |
-| **Equipe** | André Nascimento Pardinho, Cauan Mendonça Valadão, Guilherme Afonso Bongestab, Jéssica Meira Costa e Pedro Henrique Soares Magalhães |
+| **Equipe** | _Nome 1, Nome 2, ... (até 5 integrantes)_ |
 
 ---
 
@@ -67,7 +67,7 @@ O jogo escolhido, **Impostor**, é um bom caso de uso porque exige exatamente o 
 
 O palpite ignora acentos, maiúsculas e espaços extras (`"Feijão"` = `" feijao "`). Há limite de tempo para cada ação (padrão: 60 s para perguntar/responder/palpitar e 45 s para votar); se o jogador não agir, o passo é pulado. Ao final, a sala volta ao lobby para uma nova partida.
 
-O servidor possui **5 temas** (frutas, super-heróis, esportes, instrumentos musicais, brinquedos e brincadeiras) com **50 palavras** no total.
+O servidor possui **10 temas** (comidas, animais e pets, profissões, lugares, objetos, veículos, vilões e antagonistas, superpoderes, monstros e criaturas, memes da internet) com **mais de 280 palavras** no total.
 
 ---
 
@@ -145,8 +145,8 @@ Como o TCP é um **fluxo de bytes sem fronteiras de mensagem**, o protocolo defi
 
 **Cliente (cada jogador)**
 - Python **3.8+** com **Tkinter** (no Linux: `sudo apt install python3-tk`).
-- **Pillow**: `pip install pillow`.
-- Resolução de tela de pelo menos ~520×420 (a interface se adapta ao tamanho da janela).
+- **Pillow**: `pip install pillow` (também desenha os emojis; usa a fonte de emoji colorida do sistema, como Segoe UI Emoji no Windows. Sem ela, os emojis aparecem como texto simples).
+- Resolução de tela de pelo menos ~440×400 (a interface se adapta ao tamanho da janela: em janelas estreitas a barra de ações e a tela de login usam um layout compacto).
 - Pasta `Images/` com **pelo menos 5 imagens** (uma por jogador possível; sem imagens o cliente usa uma skin "Padrão" única) (`.png`, `.jpg`, `.jpeg`, `.webp` ou `.bmp`) — o **nome do arquivo é o nome da skin** e duas pessoas não podem usar a mesma skin.
 - Pasta `background/` com uma imagem de fundo da sala (usa a primeira encontrada; se não houver, usa cor lisa).
 
@@ -275,7 +275,7 @@ stateDiagram-v2
 | `GUESSING` → `END_GAME` | Palpite recebido ou tempo esgotado | `guess_result`, `state_change`, `end_game` |
 | `END_GAME` → `WAIT_PLAYERS` | 1 s depois do fim | `state_change`, `lobby_update` |
 
-Em qualquer estado de jogo, `player_quit`/queda de conexão e `ping` são tratados. Se **o impostor se desconecta** ou **restam menos de 3 jogadores**, a partida é **abortada** (`end_game` com `result: "ABORTED"`) e a sala volta ao lobby.
+Em qualquer estado de jogo, `player_quit`/queda de conexão, `ping` e `send_emoji` são tratados (o emoji não passa pela fila da partida e nunca interfere na ordem dos turnos). Se **o impostor se desconecta** ou **restam menos de 3 jogadores**, a partida é **abortada** (`end_game` com `result: "ABORTED"`) e a sala volta ao lobby.
 
 Cada mudança de estado é anunciada a todos por `state_change`.
 
@@ -290,7 +290,7 @@ stateDiagram-v2
     LOBBY --> EM_JOGO: start_game
     EM_JOGO --> FIM: end_game
     FIM --> LOBBY: JOGAR DE NOVO (marca pronto automaticamente)
-    FIM --> [*]: SAIR (envia player_quit e fecha o programa)
+    FIM --> LOGIN: SAIR (envia player_quit, desconecta e volta à tela inicial)
     LOBBY --> LOGIN: conexao perdida
     EM_JOGO --> LOGIN: conexao perdida
 ```
@@ -308,6 +308,7 @@ Dentro de `EM_JOGO` o cliente fica "pendente" de uma ação do jogador quando re
 | `player_ready` | `{}` | No lobby | Marca o jogador como pronto; pode iniciar a partida |
 | `player_quit` | `{}` | A qualquer momento | Servidor encerra a conexão e remove o jogador |
 | `ping` | `{t}` | A qualquer momento | Servidor responde `pong` com o mesmo `t` |
+| `send_emoji` | `{emoji}` | No lobby ou em qualquer estado da partida (não depende da vez) | `emoji` deve estar na lista permitida: 🤔 😂 😖 🥸 😱 🤥 🤫; senão `error` `INVALID_EMOJI`. No máximo 1 a cada 0,3 s por jogador (excesso é ignorado) |
 | `send_question` | `{text}` | Após `ask_prompt` com `asker` = você | Texto não vazio (≤ 200) |
 | `send_answer` | `{text}` | Após `answer_prompt` com `responder` = você | Texto não vazio (≤ 200) |
 | `send_continue_vote` | `{choice}` | Após `ask_continue` | `choice` ∈ {`"vote"`, `"continue"`} |
@@ -344,6 +345,7 @@ Dentro de `EM_JOGO` o cliente fica "pendente" de uma ação do jogador quando re
 | `info` | broadcast | `{message}` | Aviso informativo (ex.: jogador desconectou-se) |
 | `error` | unicast | `{code, message}` | Erro recuperável (ver 7.6) |
 | `pong` | unicast | `{t}` | Resposta ao `ping` |
+| `broadcast_emoji` | broadcast | `{player, emoji}` | Um jogador reagiu. O cliente mostra o emoji por 3 s sobre o ícone dele (ou sobre o balão, se houver) e um novo emoji do mesmo jogador substitui o anterior |
 
 ### 7.5 Fluxos de mensagens
 
@@ -439,6 +441,7 @@ sequenceDiagram
 | `INVALID_STATE` | Evento de jogo enviado no lobby, ou `player_ready` com a partida em andamento |
 | `NOT_YOUR_TURN` | Ação de quem não é o jogador da vez (ou que já agiu) — é assim que o servidor **impõe a ordem dos turnos** |
 | `UNEXPECTED_EVENT` | Evento diferente do que o servidor aguarda no momento |
+| `INVALID_EMOJI` | `send_emoji` com um emoji fora da lista permitida |
 | `INVALID_INPUT` | Texto vazio, `choice` inválida, voto em jogador inexistente ou em si mesmo (o cliente pode tentar de novo dentro do prazo) |
 
 ### 7.7 Timeouts e desconexões
@@ -503,7 +506,8 @@ sequenceDiagram
 - **Chance de empate** para o Impostor descoberto, com comparação de palpite insensível a acentos, caixa e espaços.
 - **Escolha de *skin* com disponibilidade em tempo real:** a tela de login consulta o servidor (`skins_query`/`skins_taken`) sem entrar na sala e bloqueia as skins já usadas.
 - **Tolerância a falhas:** *timeouts* por ação, abstenção automática, tratamento de desconexão no meio da partida e aborto controlado (`ABORTED`).
-- **Conteúdo próprio:** 5 temas de conhecimento geral para todos jogarem, e fácil adição ou remoção de temas pelo código.
+- **Conteúdo próprio:** 10 temas com mais de 280 palavras, com referências de cultura pop e memes brasileiros.
+- **Reações com emojis em tempo real** (`send_emoji` → `broadcast_emoji`): 7 emojis que todos veem por 3 s sobre o ícone de quem reagiu (ou sobre o balão, se ele já tiver falado); um novo emoji substitui o anterior.
 - **Interface gráfica própria** (Tkinter + Pillow) com sala em tela escalável, balões de fala, histórico e regras embutidas.
 
 ---
