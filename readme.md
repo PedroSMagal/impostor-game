@@ -525,6 +525,6 @@ sequenceDiagram
 
 | Nome | Responsabilidade |
 |---|---|
-| _Nome 1_ | _ex.: servidor e protocolo_ |
-| _Nome 2_ | _ex.: cliente gráfico_ |
-| _Nome 3_ | _ex.: documentação e testes_ |
+| Cauan e Guilherme | servidor e protocolo_ |
+| André | cliente gráfico_ |
+| Jéssica e Pedro | documentação e testes_ |
