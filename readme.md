@@ -10,7 +10,7 @@ Aplicação distribuída no modelo **cliente-servidor** em que de 3 a 5 jogadore
 | **Transporte** | TCP (porta padrão `5000`) |
 | **Servidor** | `server.py` (somente biblioteca padrão) |
 | **Cliente** | `client.py` (interface gráfica Tkinter + Pillow) |
-| **Equipe** | _Nome 1, Nome 2, ... (até 5 integrantes)_ |
+| **Equipe** | André Nascimento Pardinho, Cauan Mendonça Valadão, Guilherme Afonso Bongestab, Jéssica Meira Costa, Pedro Henrique Soares Magalhães |
 
 ---
 
@@ -159,7 +159,7 @@ Como o TCP é um **fluxo de bytes sem fronteiras de mensagem**, o protocolo defi
 ## 6. Instalação e execução
 
 ```bash
-git clone <URL-DO-REPOSITORIO>
+git clone <https://github.com/PedroSMagal/impostor-game>
 cd <pasta-do-projeto>
 pip install pillow
 ```
